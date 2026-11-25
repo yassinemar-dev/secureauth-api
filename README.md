@@ -8,5 +8,6 @@ A production-grade authentication boilerplate built with NestJS, TypeScript, Pos
 cp .env.example .env
 docker compose up -d
 npm install
+npm run prisma:deploy
 npm run start:dev
 ```
