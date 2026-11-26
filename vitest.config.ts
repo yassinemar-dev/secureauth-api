@@ -10,5 +10,18 @@ export default defineConfig({
     root: './',
     include: ['**/*.spec.ts'],
     env: testEnv,
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'html'],
+      include: ['src/**/*.ts'],
+      // Only generated code, the bootstrap entry and the CLI entry are excluded.
+      exclude: ['src/generated/**', 'src/main.ts', 'src/admin/admin-promote.ts'],
+      thresholds: {
+        lines: 80,
+        functions: 80,
+        branches: 70,
+        statements: 80,
+      },
+    },
   },
 });

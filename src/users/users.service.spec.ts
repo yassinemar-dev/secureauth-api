@@ -17,8 +17,15 @@ describe('UsersService', () => {
   const userFindMany = vi.fn();
   const userCount = vi.fn();
   const userUpdate = vi.fn();
+  const transaction = vi.fn();
   const hash = vi.fn();
   let service: UsersService;
+
+  const serializationFailure = () =>
+    new Prisma.PrismaClientKnownRequestError('Write conflict', {
+      code: 'P2034',
+      clientVersion: '7.10.1',
+    });
 
   const safeUser: SafeUser = {
     id: 'user-1',
@@ -30,6 +37,7 @@ describe('UsersService', () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    transaction.mockReset();
     const module = await Test.createTestingModule({
       providers: [
         UsersService,
@@ -43,6 +51,7 @@ describe('UsersService', () => {
               count: userCount,
               update: userUpdate,
             },
+            $transaction: transaction,
           },
         },
         { provide: PasswordService, useValue: { hash } },
@@ -223,5 +232,91 @@ describe('UsersService', () => {
     expect(fake.transactionOptions).toContainEqual({
       isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
     });
+  });
+
+  it('reports a missing target without touching the admin count', async () => {
+    const findUnique = vi.fn().mockResolvedValue(null);
+    const count = vi.fn();
+    transaction.mockImplementation(async (fn) =>
+      fn({ user: { findUnique, count } }),
+    );
+
+    await expect(
+      service.updateRoleWithLastAdminGuard('missing', Role.USER),
+    ).resolves.toEqual({ status: 'not-found' });
+    expect(count).not.toHaveBeenCalled();
+  });
+
+  it('keeps the last admin and reports the genuine conflict', async () => {
+    const findUnique = vi.fn().mockResolvedValue({ role: Role.ADMIN });
+    const count = vi.fn().mockResolvedValue(1);
+    transaction.mockImplementation(async (fn) =>
+      fn({ user: { findUnique, count } }),
+    );
+
+    await expect(
+      service.updateRoleWithLastAdminGuard('admin-1', Role.USER),
+    ).resolves.toEqual({ status: 'last-admin' });
+    expect(count).toHaveBeenCalledWith({ where: { role: Role.ADMIN } });
+  });
+
+  it('retries a serialization failure and succeeds on the next attempt', async () => {
+    const update = vi.fn().mockResolvedValue({ ...safeUser, role: Role.ADMIN });
+    transaction
+      .mockRejectedValueOnce(serializationFailure())
+      .mockImplementationOnce(async (fn) =>
+        fn({
+          user: {
+            findUnique: vi.fn().mockResolvedValue({ role: Role.USER }),
+            count: vi.fn().mockResolvedValue(2),
+            update,
+          },
+        }),
+      );
+
+    await expect(
+      service.updateRoleWithLastAdminGuard('user-1', Role.ADMIN),
+    ).resolves.toEqual({
+      status: 'updated',
+      user: { ...safeUser, role: Role.ADMIN },
+    });
+    expect(transaction).toHaveBeenCalledTimes(2);
+    expect(update).toHaveBeenCalledOnce();
+  });
+
+  it('retries a driver-adapter serialization conflict too', async () => {
+    const adapterError = Object.assign(new Error('TransactionWriteConflict'), {
+      name: 'DriverAdapterError',
+      cause: { kind: 'TransactionWriteConflict' },
+    });
+    const update = vi.fn().mockResolvedValue(safeUser);
+    transaction
+      .mockRejectedValueOnce(adapterError)
+      .mockImplementationOnce(async (fn) =>
+        fn({
+          user: {
+            findUnique: vi.fn().mockResolvedValue({ role: Role.USER }),
+            count: vi.fn().mockResolvedValue(2),
+            update,
+          },
+        }),
+      );
+
+    await expect(
+      service.updateRoleWithLastAdminGuard('user-1', Role.ADMIN),
+    ).resolves.toEqual({ status: 'updated', user: safeUser });
+    expect(transaction).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns a distinct 409 when serialization retries are exhausted', async () => {
+    transaction.mockRejectedValue(serializationFailure());
+
+    const error = await service
+      .updateRoleWithLastAdminGuard('admin-1', Role.USER)
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(ConflictException);
+    expect((error as Error).message).toBe('Concurrent update, please retry');
+    expect(transaction).toHaveBeenCalledTimes(3);
   });
 });

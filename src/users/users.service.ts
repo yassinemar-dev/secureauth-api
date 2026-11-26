@@ -118,15 +118,28 @@ export class UsersService {
   }
 
   private isSerializationFailure(error: unknown): boolean {
-    return (
+    if (
       error instanceof Prisma.PrismaClientKnownRequestError &&
       error.code === 'P2034'
+    ) {
+      return true;
+    }
+    // With a driver adapter (pg), Serializable conflicts surface as a
+    // DriverAdapterError rather than Prisma's P2034.
+    const adapterError = error as {
+      name?: string;
+      cause?: { kind?: string };
+    } | null;
+    return (
+      adapterError?.name === 'DriverAdapterError' &&
+      adapterError.cause?.kind === 'TransactionWriteConflict'
     );
   }
 
   // Count and update share one Serializable transaction so the last-admin
   // decision is made against a committed snapshot. P2034 is retried; if it
-  // persists, callers get the same 409 as a real last-admin conflict.
+  // persists, callers get a distinct 409 so it is not confused with a real
+  // last-admin conflict.
   async updateRoleWithLastAdminGuard(
     id: string,
     role: Role,
@@ -168,10 +181,10 @@ export class UsersService {
         if (attempt < 3) {
           continue;
         }
-        throw new ConflictException('Unable to demote the last admin');
+        throw new ConflictException('Concurrent update, please retry');
       }
     }
 
-    throw new ConflictException('Unable to demote the last admin');
+    throw new ConflictException('Concurrent update, please retry');
   }
 }

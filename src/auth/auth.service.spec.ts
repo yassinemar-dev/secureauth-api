@@ -192,4 +192,23 @@ describe('AuthService', () => {
     );
     expect(refreshRevokeAllForUser).toHaveBeenCalledWith(user.id);
   });
+
+  it('logout revokes one family and logout-all revokes every session', async () => {
+    refreshRevokeFamily.mockResolvedValue(undefined);
+    refreshRevokeAllForUser.mockResolvedValue(undefined);
+
+    await expect(service.logout('raw-refresh-token')).resolves.toBeUndefined();
+    await expect(service.logoutAll(user.id)).resolves.toBeUndefined();
+
+    expect(refreshRevokeFamily).toHaveBeenCalledWith('raw-refresh-token');
+    expect(refreshRevokeAllForUser).toHaveBeenCalledWith(user.id);
+  });
+
+  it('me returns the current safe user and rejects deleted users', async () => {
+    usersFindById.mockResolvedValueOnce(safeUser).mockResolvedValueOnce(null);
+
+    await expect(service.me(user.id)).resolves.toBe(safeUser);
+    await expect(service.me(user.id)).rejects.toThrow('Unauthorized');
+    expect(usersFindById).toHaveBeenCalledWith(user.id);
+  });
 });

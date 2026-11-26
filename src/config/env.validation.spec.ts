@@ -21,6 +21,10 @@ describe('envValidationSchema', () => {
     ).toBeUndefined();
   });
 
+  it('rejects a malformed CORS origin', () => {
+    expect(validate({ CORS_ORIGINS: 'not-an-origin' }).error).toBeDefined();
+  });
+
   it('rejects TRUST_PROXY=true', () => {
     expect(validate({ TRUST_PROXY: 'true' }).error).toBeDefined();
   });
