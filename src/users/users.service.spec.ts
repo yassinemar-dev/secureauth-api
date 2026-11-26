@@ -139,7 +139,7 @@ describe('UsersService', () => {
     expect(result).not.toHaveProperty('passwordHash');
   });
 
-  it('lists users with cursor pagination and never returns passwordHash', async () => {
+  it('lists users with keyset pagination and never returns passwordHash', async () => {
     const rows = [
       safeUser,
       { ...safeUser, id: 'user-2' },
@@ -161,11 +161,42 @@ describe('UsersService', () => {
     await service.list({ limit: 2, cursor: 'user-1' });
     expect(userFindMany).toHaveBeenLastCalledWith({
       take: 3,
-      cursor: { id: 'user-1' },
-      skip: 1,
+      where: { id: { gt: 'user-1' } },
       orderBy: { id: 'asc' },
       omit: { passwordHash: true },
     });
+  });
+
+  it('returns a normal page for a syntactically valid but absent cursor', async () => {
+    userFindMany.mockResolvedValue([safeUser]);
+
+    await expect(
+      service.list({ limit: 2, cursor: '00000000-0000-4000-8000-000000000000' }),
+    ).resolves.toEqual({ items: [safeUser], nextCursor: null });
+    expect(userFindMany).toHaveBeenCalledWith({
+      take: 3,
+      where: { id: { gt: '00000000-0000-4000-8000-000000000000' } },
+      orderBy: { id: 'asc' },
+      omit: { passwordHash: true },
+    });
+  });
+
+  it('does not repeat or skip rows across pages', async () => {
+    const ids = ['a', 'b', 'c', 'd', 'e'];
+    userFindMany.mockImplementation(
+      async ({ where }: { where?: { id?: { gt?: string } } }) =>
+        ids
+          .filter((id) => !where?.id?.gt || id > where.id.gt)
+          .slice(0, 3)
+          .map((id) => ({ ...safeUser, id })),
+    );
+
+    const first = await service.list({ limit: 2 });
+    const second = await service.list({ limit: 2, cursor: first.nextCursor ?? '' });
+
+    expect(first.items.map((item) => item.id)).toEqual(['a', 'b']);
+    expect(second.items.map((item) => item.id)).toEqual(['c', 'd']);
+    expect(second.nextCursor).toBe('d');
   });
 
   it('updates a role without returning passwordHash', async () => {

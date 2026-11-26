@@ -13,7 +13,10 @@ import {
   UsersService,
   type SafeUser,
 } from '../src/users/users.service.js';
-import { createInMemoryPrisma } from './in-memory-prisma.js';
+import {
+  createInMemoryPrisma,
+  hashRefreshTokenForTest,
+} from './in-memory-prisma.js';
 import { createThrottlerResetter } from './throttler-storage.js';
 
 function toSafeUser(user: User): SafeUser {
@@ -142,6 +145,12 @@ describe('Auth (e2e)', () => {
     expect(login.body.tokenType).toBe('Bearer');
     expect(login.body.expiresIn).toBe(900);
 
+    const issued = [...fakePrisma.refreshTokens.values()].find(
+      (row) =>
+        row.tokenHash === hashRefreshTokenForTest(login.body.refreshToken),
+    );
+    expect(issued?.sessionStartedAt).toBeInstanceOf(Date);
+
     await request(server)
       .post('/auth/register')
       .send({ email: 'user@example.com', password: validPassword })
@@ -171,11 +180,20 @@ describe('Auth (e2e)', () => {
   it('detects refresh reuse and revokes the newest token in the family', async () => {
     const server = app!.getHttpServer();
     const first = await loginUser();
+    const sessionStartedAt = [...fakePrisma.refreshTokens.values()].find(
+      (row) =>
+        row.tokenHash === hashRefreshTokenForTest(first.body.refreshToken),
+    )!.sessionStartedAt;
     const rotated = await request(server)
       .post('/auth/refresh')
       .send({ refreshToken: first.body.refreshToken })
       .expect(200);
     expect(rotated.body.refreshToken).not.toBe(first.body.refreshToken);
+    const successor = [...fakePrisma.refreshTokens.values()].find(
+      (row) =>
+        row.tokenHash === hashRefreshTokenForTest(rotated.body.refreshToken),
+    );
+    expect(successor?.sessionStartedAt).toEqual(sessionStartedAt);
 
     await request(server)
       .post('/auth/refresh')
@@ -186,6 +204,36 @@ describe('Auth (e2e)', () => {
       .post('/auth/refresh')
       .send({ refreshToken: rotated.body.refreshToken })
       .expect(401);
+  });
+
+  it('revokes the family when an expired revoked token is replayed over HTTP', async () => {
+    const server = app!.getHttpServer();
+    const familyId = randomUUID();
+    fakePrisma.seedRefreshToken({
+      userId: 'user-1',
+      familyId,
+      tokenHash: hashRefreshTokenForTest('expired-revoked-e2e-token'),
+      expiresAt: new Date(Date.now() - 60_000),
+      revokedAt: new Date(Date.now() - 120_000),
+    });
+    fakePrisma.seedRefreshToken({
+      userId: 'user-1',
+      familyId,
+      tokenHash: hashRefreshTokenForTest('expired-revoked-sibling-e2e-token'),
+      expiresAt: new Date(Date.now() + 86_400_000),
+    });
+
+    await request(server)
+      .post('/auth/refresh')
+      .send({ refreshToken: 'expired-revoked-e2e-token' })
+      .expect(401);
+
+    const sibling = [...fakePrisma.refreshTokens.values()].find(
+      (row) =>
+        row.tokenHash ===
+        hashRefreshTokenForTest('expired-revoked-sibling-e2e-token'),
+    );
+    expect(sibling?.revokedAt).toBeInstanceOf(Date);
   });
 
   it('revokes a family on logout and always returns 204', async () => {

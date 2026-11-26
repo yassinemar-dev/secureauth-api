@@ -7,6 +7,7 @@ import {
 import { JwtService } from '@nestjs/jwt';
 import { Role } from '../../generated/prisma/client.js';
 import type { AuthenticatedUser, JwtPayload } from '../auth.types.js';
+import { JWT_AUDIENCE, JWT_ISSUER } from '../jwt-claims.js';
 
 const BEARER_HEADER = /^Bearer ([^\s]+)$/;
 
@@ -27,6 +28,8 @@ export class JwtAuthGuard implements CanActivate {
     try {
       const payload = await this.jwt.verifyAsync<JwtPayload>(match[1], {
         algorithms: ['HS256'],
+        issuer: JWT_ISSUER,
+        audience: JWT_AUDIENCE,
       });
       if (!payload.sub || !Object.values(Role).includes(payload.role)) {
         throw new UnauthorizedException('Unauthorized');

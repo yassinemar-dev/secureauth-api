@@ -1,12 +1,13 @@
 import { Module, ValidationPipe } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
-import { APP_GUARD, APP_PIPE } from '@nestjs/core';
+import { APP_FILTER, APP_GUARD, APP_PIPE } from '@nestjs/core';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { AdminModule } from './admin/admin.module.js';
 import { AuthModule } from './auth/auth.module.js';
 import { AppController } from './app.controller.js';
 import { AppService } from './app.service.js';
 import { envValidationSchema } from './config/env.validation.js';
+import { AllExceptionsFilter } from './filters/all-exceptions.filter.js';
 import { PasswordModule } from './password/password.module.js';
 import { PrismaModule } from './prisma/prisma.module.js';
 import { AppThrottlerGuard } from './throttler/app-throttler.guard.js';
@@ -43,6 +44,7 @@ import { UsersModule } from './users/users.module.js';
         }),
     },
     { provide: APP_GUARD, useClass: AppThrottlerGuard },
+    { provide: APP_FILTER, useClass: AllExceptionsFilter },
   ],
 })
 export class AppModule {}

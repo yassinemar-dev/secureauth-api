@@ -15,7 +15,12 @@ export default defineConfig({
       reporter: ['text', 'html'],
       include: ['src/**/*.ts'],
       // Only generated code, the bootstrap entry and the CLI entry are excluded.
-      exclude: ['src/generated/**', 'src/main.ts', 'src/admin/admin-promote.ts'],
+      exclude: [
+        'src/generated/**',
+        'src/main.ts',
+        'src/admin/admin-promote.ts',
+        'src/tokens/tokens-purge.ts',
+      ],
       thresholds: {
         lines: 80,
         functions: 80,

@@ -30,9 +30,10 @@ model RefreshToken {
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   familyId  String    @db.Uuid
   tokenHash String    @unique
-  expiresAt DateTime
-  revokedAt DateTime?
-  createdAt DateTime  @default(now())
+  expiresAt        DateTime
+  revokedAt        DateTime?
+  sessionStartedAt DateTime  @default(now())
+  createdAt        DateTime  @default(now())
 
   @@index([userId])
   @@index([familyId])

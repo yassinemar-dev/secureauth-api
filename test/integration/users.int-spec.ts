@@ -43,6 +43,44 @@ describe('UsersService against Postgres', () => {
     expect(page.items[0]).not.toHaveProperty('passwordHash');
   });
 
+  it('paginates through every user exactly once', async () => {
+    for (let index = 0; index < 5; index += 1) {
+      await users.create({ email: `page${index}@example.com`, password });
+    }
+
+    const seen: string[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await users.list({ limit: 2, cursor });
+      seen.push(...page.items.map((item) => item.id));
+      cursor = page.nextCursor ?? undefined;
+    } while (cursor);
+
+    const allIds = (await prisma.user.findMany({ select: { id: true } }))
+      .map((row) => row.id)
+      .sort();
+    expect(seen).toEqual(allIds);
+  });
+
+  it('returns a normal page for a syntactically valid but absent cursor', async () => {
+    for (let index = 0; index < 3; index += 1) {
+      await users.create({ email: `cursor${index}@example.com`, password });
+    }
+
+    const page = await users.list({
+      limit: 2,
+      cursor: '00000000-0000-4000-8000-000000000000',
+    });
+
+    const expected = (await prisma.user.findMany({
+      select: { id: true },
+      orderBy: { id: 'asc' },
+      take: 2,
+    })).map((row) => row.id);
+    expect(page.items.map((item) => item.id)).toEqual(expected);
+    expect(page.nextCursor).not.toBeNull();
+  });
+
   it('maps a real P2002 for a case-only duplicate to a generic 409', async () => {
     await users.create({ email: 'Dup@Example.com', password });
 

@@ -8,6 +8,7 @@ export const testEnv: Record<string, string> = {
   JWT_REFRESH_SECRET: 'test_only_refresh_secret_do_not_use_0987654321',
   JWT_ACCESS_TTL: '15m',
   JWT_REFRESH_TTL: '7d',
+  MAX_SESSION_AGE: '30d',
   THROTTLE_TTL_MS: '60000',
   THROTTLE_LIMIT: '100',
   // One trusted proxy lets tests vary req.ip with X-Forwarded-For.

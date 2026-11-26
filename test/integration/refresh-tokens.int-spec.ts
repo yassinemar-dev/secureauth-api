@@ -6,6 +6,7 @@ import {
 } from '../../src/auth/refresh-token.service.js';
 import { Role } from '../../src/generated/prisma/client.js';
 import type { PrismaService } from '../../src/prisma/prisma.service.js';
+import { hashRefreshTokenForTest } from '../in-memory-prisma.js';
 import { createPrisma, integrationConfig, resetDb } from './fixtures.js';
 
 describe('RefreshTokenService against Postgres', () => {
@@ -36,11 +37,16 @@ describe('RefreshTokenService against Postgres', () => {
 
   it('issues, rotates and revokes the whole family on reuse', async () => {
     const token = await service.issue(userId);
+    const issued = await prisma.refreshToken.findUniqueOrThrow({
+      where: { tokenHash: hashRefreshTokenForTest(token) },
+    });
     const rotated = await service.rotate(token);
     const family = await prisma.refreshToken.findMany({
       where: { familyId: rotated.familyId },
     });
 
+    expect(issued.sessionStartedAt).toBeInstanceOf(Date);
+    expect(family.every((row) => row.sessionStartedAt.getTime() === issued.sessionStartedAt.getTime())).toBe(true);
     expect(rotated.userId).toBe(userId);
     expect(family).toHaveLength(2);
     // The old token is revoked at rotation time; the new one stays usable.
@@ -93,6 +99,143 @@ describe('RefreshTokenService against Postgres', () => {
         INVALID_REFRESH_TOKEN,
       );
     }
+  });
+
+  it('revokes the family when the absolute session cap is exceeded', async () => {
+    const familyId = randomUUID();
+    await prisma.refreshToken.create({
+      data: {
+        userId,
+        familyId,
+        tokenHash: hashRefreshTokenForTest('stale-session-token'),
+        sessionStartedAt: new Date(Date.now() - 31 * 86_400_000),
+        expiresAt: new Date(Date.now() + 86_400_000),
+      },
+    });
+    await prisma.refreshToken.create({
+      data: {
+        userId,
+        familyId,
+        tokenHash: hashRefreshTokenForTest('sibling-session-token'),
+        sessionStartedAt: new Date(),
+        expiresAt: new Date(Date.now() + 86_400_000),
+      },
+    });
+
+    await expect(service.rotate('stale-session-token')).rejects.toThrow(
+      INVALID_REFRESH_TOKEN,
+    );
+
+    const rows = await prisma.refreshToken.findMany({ where: { familyId } });
+    expect(rows).toHaveLength(2);
+    expect(rows.every((row) => row.revokedAt !== null)).toBe(true);
+  });
+
+  it('revokes the family when a revoked token is replayed after expiry', async () => {
+    const familyId = randomUUID();
+    await prisma.refreshToken.createMany({
+      data: [
+        {
+          userId,
+          familyId,
+          tokenHash: hashRefreshTokenForTest('expired-revoked-int'),
+          expiresAt: new Date(Date.now() - 60_000),
+          revokedAt: new Date(Date.now() - 120_000),
+        },
+        {
+          userId,
+          familyId,
+          tokenHash: hashRefreshTokenForTest('expired-revoked-sibling-int'),
+          expiresAt: new Date(Date.now() + 86_400_000),
+        },
+      ],
+    });
+
+    await expect(service.rotate('expired-revoked-int')).rejects.toThrow(
+      INVALID_REFRESH_TOKEN,
+    );
+
+    const rows = await prisma.refreshToken.findMany({ where: { familyId } });
+    expect(rows).toHaveLength(2);
+    expect(rows.every((row) => row.revokedAt !== null)).toBe(true);
+  });
+
+  it('revokes the family when over-age and expired, but not for a plain expiry', async () => {
+    const overAgeFamily = randomUUID();
+    await prisma.refreshToken.createMany({
+      data: [
+        {
+          userId,
+          familyId: overAgeFamily,
+          tokenHash: hashRefreshTokenForTest('expired-over-age-int'),
+          sessionStartedAt: new Date(Date.now() - 31 * 86_400_000),
+          expiresAt: new Date(Date.now() - 60_000),
+        },
+        {
+          userId,
+          familyId: overAgeFamily,
+          tokenHash: hashRefreshTokenForTest('over-age-sibling-int'),
+          expiresAt: new Date(Date.now() + 86_400_000),
+        },
+      ],
+    });
+
+    await expect(service.rotate('expired-over-age-int')).rejects.toThrow(
+      INVALID_REFRESH_TOKEN,
+    );
+    const overAgeRows = await prisma.refreshToken.findMany({
+      where: { familyId: overAgeFamily },
+    });
+    expect(overAgeRows.every((row) => row.revokedAt !== null)).toBe(true);
+
+    const plainFamily = randomUUID();
+    await prisma.refreshToken.createMany({
+      data: [
+        {
+          userId,
+          familyId: plainFamily,
+          tokenHash: hashRefreshTokenForTest('plain-expired-int'),
+          expiresAt: new Date(Date.now() - 60_000),
+        },
+        {
+          userId,
+          familyId: plainFamily,
+          tokenHash: hashRefreshTokenForTest('plain-expired-sibling-int'),
+          expiresAt: new Date(Date.now() + 86_400_000),
+        },
+      ],
+    });
+
+    await expect(service.rotate('plain-expired-int')).rejects.toThrow(
+      INVALID_REFRESH_TOKEN,
+    );
+    const plainRows = await prisma.refreshToken.findMany({
+      where: { familyId: plainFamily },
+    });
+    expect(plainRows.every((row) => row.revokedAt === null)).toBe(true);
+  });
+
+  it('caps a rotated token at sessionStartedAt + MAX_SESSION_AGE', async () => {
+    const startedAt = new Date(Date.now() - 29 * 86_400_000);
+    await prisma.refreshToken.create({
+      data: {
+        userId,
+        familyId: randomUUID(),
+        tokenHash: hashRefreshTokenForTest('near-cap-session-token'),
+        sessionStartedAt: startedAt,
+        expiresAt: new Date(Date.now() + 7 * 86_400_000),
+      },
+    });
+
+    const rotated = await service.rotate('near-cap-session-token');
+    const row = await prisma.refreshToken.findUniqueOrThrow({
+      where: { tokenHash: hashRefreshTokenForTest(rotated.token) },
+    });
+
+    expect(row.sessionStartedAt.getTime()).toBe(startedAt.getTime());
+    expect(row.expiresAt.getTime()).toBe(
+      startedAt.getTime() + 30 * 86_400_000,
+    );
   });
 
   it('deletes a user\'s refresh tokens through the schema cascade', async () => {

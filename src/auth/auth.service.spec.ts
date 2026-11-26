@@ -7,6 +7,7 @@ import { PasswordService } from '../password/password.service.js';
 import { UsersService, type SafeUser } from '../users/users.service.js';
 import { AuthService } from './auth.service.js';
 import type { JwtPayload } from './auth.types.js';
+import { JWT_AUDIENCE, JWT_ISSUER } from './jwt-claims.js';
 import type { RefreshTokenService } from './refresh-token.service.js';
 
 describe('AuthService', () => {
@@ -106,6 +107,8 @@ describe('AuthService', () => {
 
     expect(payload.sub).toBe(user.id);
     expect(payload.role).toBe(Role.USER);
+    expect(payload.iss).toBe(JWT_ISSUER);
+    expect(payload.aud).toBe(JWT_AUDIENCE);
     expect(result.refreshToken).toBe('raw-refresh-token');
     expect(refreshIssue).toHaveBeenCalledWith(user.id);
     expect(result.tokenType).toBe('Bearer');

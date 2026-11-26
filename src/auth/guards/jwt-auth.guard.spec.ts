@@ -3,6 +3,7 @@ import { JwtService } from '@nestjs/jwt';
 import { testEnv } from '../../../test/env.js';
 import { Role } from '../../generated/prisma/client.js';
 import type { AuthenticatedUser, JwtPayload } from '../auth.types.js';
+import { JWT_AUDIENCE, JWT_ISSUER } from '../jwt-claims.js';
 import { JwtAuthGuard } from './jwt-auth.guard.js';
 
 function makeContext(header?: string): {
@@ -80,8 +81,32 @@ describe('JwtAuthGuard', () => {
     await expectUnauthorized(`Bearer ${noneToken(payload)}`);
   });
 
-  it('accepts a valid HS256 token and attaches the user', async () => {
+  it('rejects a token with a wrong issuer', async () => {
+    const token = await jwt.signAsync(payload, {
+      issuer: 'another-api',
+      audience: JWT_AUDIENCE,
+    });
+    await expectUnauthorized(`Bearer ${token}`);
+  });
+
+  it('rejects a token with a wrong audience', async () => {
+    const token = await jwt.signAsync(payload, {
+      issuer: JWT_ISSUER,
+      audience: 'another-client',
+    });
+    await expectUnauthorized(`Bearer ${token}`);
+  });
+
+  it('rejects a token with no issuer or audience', async () => {
     const token = await jwt.signAsync(payload);
+    await expectUnauthorized(`Bearer ${token}`);
+  });
+
+  it('accepts a valid HS256 token with the expected issuer and audience', async () => {
+    const token = await jwt.signAsync(payload, {
+      issuer: JWT_ISSUER,
+      audience: JWT_AUDIENCE,
+    });
     const { context, request } = makeContext(`Bearer ${token}`);
 
     await expect(guard.canActivate(context)).resolves.toBe(true);

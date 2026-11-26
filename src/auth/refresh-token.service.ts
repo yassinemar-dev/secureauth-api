@@ -23,6 +23,7 @@ type RotateOutcome = { ok: true; value: RotatedToken } | { ok: false };
 export class RefreshTokenService {
   private readonly secret: string;
   private readonly refreshTtlSeconds: number;
+  private readonly maxSessionAgeSeconds: number;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -31,6 +32,9 @@ export class RefreshTokenService {
     this.secret = config.getOrThrow<string>('JWT_REFRESH_SECRET');
     this.refreshTtlSeconds = ttlToSeconds(
       config.getOrThrow<string>('JWT_REFRESH_TTL'),
+    );
+    this.maxSessionAgeSeconds = ttlToSeconds(
+      config.getOrThrow<string>('MAX_SESSION_AGE'),
     );
   }
 
@@ -44,10 +48,18 @@ export class RefreshTokenService {
     return new UnauthorizedException(INVALID_REFRESH_TOKEN);
   }
 
+  private expiresAtFor(sessionStartedAt: Date): Date {
+    const sliding = Date.now() + this.refreshTtlSeconds * 1000;
+    const absolute = sessionStartedAt.getTime() + this.maxSessionAgeSeconds * 1000;
+    // Rotation slides the token, but never past the absolute session deadline.
+    return new Date(Math.min(sliding, absolute));
+  }
+
   private async issueOn(
     client: RefreshClient,
     userId: string,
     familyId: string,
+    sessionStartedAt: Date = new Date(),
   ): Promise<string> {
     const token = randomBytes(32).toString('base64url');
     await client.refreshToken.create({
@@ -55,7 +67,8 @@ export class RefreshTokenService {
         userId,
         familyId,
         tokenHash: this.hashToken(token),
-        expiresAt: new Date(Date.now() + this.refreshTtlSeconds * 1000),
+        sessionStartedAt,
+        expiresAt: this.expiresAtFor(sessionStartedAt),
       },
     });
     return token;
@@ -81,12 +94,30 @@ export class RefreshTokenService {
         const row = await tx.refreshToken.findUnique({
           where: { tokenHash: this.hashToken(rawToken) },
         });
-        if (!row || row.expiresAt.getTime() <= Date.now()) {
+        if (!row) {
           return { ok: false };
         }
 
+        // Reuse is checked first: a revoked token is a theft signal even if it
+        // has since expired, so the whole family must be revoked.
         if (row.revokedAt) {
           await this.revokeFamilyOn(tx, row.familyId);
+          return { ok: false };
+        }
+
+        // Old rows created before this column existed fall back to createdAt.
+        const sessionStartedAt = row.sessionStartedAt ?? row.createdAt;
+        if (
+          Date.now() - sessionStartedAt.getTime() >
+          this.maxSessionAgeSeconds * 1000
+        ) {
+          await this.revokeFamilyOn(tx, row.familyId);
+          return { ok: false };
+        }
+
+        // A genuinely expired, unrevoked token fails without implicating the
+        // rest of its family.
+        if (row.expiresAt.getTime() <= Date.now()) {
           return { ok: false };
         }
 
@@ -99,7 +130,12 @@ export class RefreshTokenService {
           return { ok: false };
         }
 
-        const token = await this.issueOn(tx, row.userId, row.familyId);
+        const token = await this.issueOn(
+          tx,
+          row.userId,
+          row.familyId,
+          sessionStartedAt,
+        );
         return {
           ok: true,
           value: { userId: row.userId, familyId: row.familyId, token },
@@ -133,10 +169,11 @@ export class RefreshTokenService {
     });
   }
 
-  async purgeExpired(): Promise<void> {
+  async purgeExpired(): Promise<number> {
     const cutoff = new Date(Date.now() - PURGE_GRACE_MS);
-    await this.prisma.refreshToken.deleteMany({
+    const result = await this.prisma.refreshToken.deleteMany({
       where: { expiresAt: { lt: cutoff } },
     });
+    return result.count;
   }
 }

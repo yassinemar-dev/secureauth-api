@@ -46,6 +46,7 @@ export function createInMemoryPrisma() {
     input: Pick<RefreshToken, 'userId' | 'familyId' | 'tokenHash' | 'expiresAt'> &
       Partial<RefreshToken>,
   ): RefreshToken => {
+    const createdAt = input.createdAt ?? new Date();
     const row: RefreshToken = {
       id: input.id ?? randomUUID(),
       userId: input.userId,
@@ -53,7 +54,9 @@ export function createInMemoryPrisma() {
       tokenHash: input.tokenHash,
       expiresAt: input.expiresAt,
       revokedAt: input.revokedAt ?? null,
-      createdAt: input.createdAt ?? new Date(),
+      // Older seeds without an explicit session start fall back to creation.
+      sessionStartedAt: input.sessionStartedAt ?? createdAt,
+      createdAt,
     };
     refreshTokens.set(row.id, row);
     return row;

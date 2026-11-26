@@ -5,6 +5,7 @@ import { PasswordService } from '../password/password.service.js';
 import { UsersService, type SafeUser } from '../users/users.service.js';
 import type { JwtPayload, LoginResponse } from './auth.types.js';
 import { LoginDto } from './dto/login.dto.js';
+import { JWT_AUDIENCE, JWT_ISSUER } from './jwt-claims.js';
 import { RegisterDto } from './dto/register.dto.js';
 import {
   INVALID_REFRESH_TOKEN,
@@ -32,7 +33,11 @@ export class AuthService {
 
   private async signAccessToken(user: SafeUser): Promise<string> {
     const payload: JwtPayload = { sub: user.id, role: user.role };
-    return this.jwt.signAsync(payload, { algorithm: 'HS256' });
+    return this.jwt.signAsync(payload, {
+      algorithm: 'HS256',
+      issuer: JWT_ISSUER,
+      audience: JWT_AUDIENCE,
+    });
   }
 
   register(dto: RegisterDto): Promise<SafeUser> {

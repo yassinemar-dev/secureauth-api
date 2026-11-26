@@ -9,14 +9,16 @@ import {
 import { testEnv } from '../../test/env.js';
 import { RefreshTokenService } from './refresh-token.service.js';
 
-function makeService() {
+function makeService(overrides: Record<string, string> = {}) {
   const fake = createInMemoryPrisma();
+  const values: Record<string, string> = {
+    JWT_REFRESH_SECRET: testEnv.JWT_REFRESH_SECRET!,
+    JWT_REFRESH_TTL: '7d',
+    MAX_SESSION_AGE: '30d',
+    ...overrides,
+  };
   const config = {
-    getOrThrow: vi.fn((key: string) => {
-      if (key === 'JWT_REFRESH_SECRET') return testEnv.JWT_REFRESH_SECRET;
-      if (key === 'JWT_REFRESH_TTL') return '7d';
-      return undefined;
-    }),
+    getOrThrow: vi.fn((key: string) => values[key]),
   } as unknown as ConfigService;
   return { service: new RefreshTokenService(fake.prisma, config), fake };
 }
@@ -93,6 +95,145 @@ describe('RefreshTokenService', () => {
     );
   });
 
+  it('revokes the family when an already revoked token is replayed after expiry', async () => {
+    const { service, fake } = makeService();
+    const familyId = randomUUID();
+    fake.seedRefreshToken({
+      userId: 'user-1',
+      familyId,
+      tokenHash: hashRefreshTokenForTest('expired-revoked-token'),
+      expiresAt: new Date(Date.now() - 60_000),
+      revokedAt: new Date(Date.now() - 120_000),
+    });
+    fake.seedRefreshToken({
+      userId: 'user-1',
+      familyId,
+      tokenHash: hashRefreshTokenForTest('sibling-of-expired'),
+      expiresAt: new Date(Date.now() + 86_400_000),
+    });
+
+    await expect(service.rotate('expired-revoked-token')).rejects.toThrow(
+      'Invalid refresh token',
+    );
+
+    expect(
+      rowsByToken(fake, 'sibling-of-expired')!.revokedAt,
+    ).toBeInstanceOf(Date);
+  });
+
+  it('revokes the family when the absolute age is exceeded even if the token expired', async () => {
+    const { service, fake } = makeService();
+    const familyId = randomUUID();
+    fake.seedRefreshToken({
+      userId: 'user-1',
+      familyId,
+      tokenHash: hashRefreshTokenForTest('expired-over-age'),
+      sessionStartedAt: new Date(Date.now() - 31 * 86_400_000),
+      expiresAt: new Date(Date.now() - 60_000),
+    });
+    fake.seedRefreshToken({
+      userId: 'user-1',
+      familyId,
+      tokenHash: hashRefreshTokenForTest('sibling-over-age'),
+      expiresAt: new Date(Date.now() + 86_400_000),
+    });
+
+    await expect(service.rotate('expired-over-age')).rejects.toThrow(
+      'Invalid refresh token',
+    );
+
+    expect(rowsByToken(fake, 'sibling-over-age')!.revokedAt).toBeInstanceOf(
+      Date,
+    );
+  });
+
+  it('does not revoke the family for an unrevoked expired token', async () => {
+    const { service, fake } = makeService();
+    const familyId = randomUUID();
+    fake.seedRefreshToken({
+      userId: 'user-1',
+      familyId,
+      tokenHash: hashRefreshTokenForTest('plain-expired-token'),
+      expiresAt: new Date(Date.now() - 60_000),
+    });
+    fake.seedRefreshToken({
+      userId: 'user-1',
+      familyId,
+      tokenHash: hashRefreshTokenForTest('sibling-plain-expired'),
+      expiresAt: new Date(Date.now() + 86_400_000),
+    });
+
+    await expect(service.rotate('plain-expired-token')).rejects.toThrow(
+      'Invalid refresh token',
+    );
+
+    expect(rowsByToken(fake, 'sibling-plain-expired')!.revokedAt).toBeNull();
+  });
+
+  it('sets a session start on issue and copies it on rotation', async () => {
+    const { service, fake } = makeService();
+    const before = Date.now();
+
+    const oldToken = await service.issue('user-1');
+    const issued = rowsByToken(fake, oldToken)!;
+    expect(issued.sessionStartedAt.getTime()).toBeGreaterThanOrEqual(before - 1000);
+    expect(issued.expiresAt.getTime()).toBeLessThanOrEqual(
+      issued.sessionStartedAt.getTime() + 30 * 86_400_000,
+    );
+
+    const { token: newest } = await service.rotate(oldToken);
+    expect(rowsByToken(fake, newest)!.sessionStartedAt).toEqual(
+      issued.sessionStartedAt,
+    );
+  });
+
+  it('revokes the whole family when the absolute session age is exceeded', async () => {
+    const { service, fake } = makeService();
+    const familyId = randomUUID();
+    fake.seedRefreshToken({
+      userId: 'user-1',
+      familyId,
+      tokenHash: hashRefreshTokenForTest('stale-token'),
+      sessionStartedAt: new Date(Date.now() - 31 * 86_400_000),
+      expiresAt: new Date(Date.now() + 86_400_000),
+    });
+    fake.seedRefreshToken({
+      userId: 'user-1',
+      familyId,
+      tokenHash: hashRefreshTokenForTest('sibling-token'),
+      expiresAt: new Date(Date.now() + 86_400_000),
+    });
+
+    await expect(service.rotate('stale-token')).rejects.toThrow(
+      'Invalid refresh token',
+    );
+
+    expect(rowsByToken(fake, 'stale-token')!.revokedAt).toBeInstanceOf(Date);
+    expect(rowsByToken(fake, 'sibling-token')!.revokedAt).toBeInstanceOf(Date);
+  });
+
+  it('caps a rotated token at the absolute session deadline', async () => {
+    const { service, fake } = makeService();
+    const familyId = randomUUID();
+    const startedAt = new Date(Date.now() - 29 * 86_400_000);
+    fake.seedRefreshToken({
+      userId: 'user-1',
+      familyId,
+      tokenHash: hashRefreshTokenForTest('near-cap-token'),
+      sessionStartedAt: startedAt,
+      expiresAt: new Date(Date.now() + 7 * 86_400_000),
+    });
+
+    const { token } = await service.rotate('near-cap-token');
+    const rotated = rowsByToken(fake, token)!;
+
+    expect(rotated.sessionStartedAt).toEqual(startedAt);
+    expect(rotated.expiresAt.getTime()).toBe(
+      startedAt.getTime() + 30 * 86_400_000,
+    );
+    expect(rotated.expiresAt.getTime()).toBeGreaterThan(Date.now());
+  });
+
   it('treats an atomic update count of zero as family reuse', async () => {
     const { service, fake } = makeService();
     const familyId = randomUUID();
@@ -157,7 +298,7 @@ describe('RefreshTokenService', () => {
       expiresAt: new Date(Date.now() + 60 * 60 * 1000),
     });
 
-    await service.purgeExpired();
+    await expect(service.purgeExpired()).resolves.toBe(1);
 
     expect(rowsByToken(fake, oldToken)).toBeUndefined();
     expect(rowsByToken(fake, graceToken)).toBeDefined();

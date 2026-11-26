@@ -2,8 +2,13 @@ import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../src/prisma/prisma.service.js';
 import { getTestDatabaseUrl, integrationEnv } from './test-db.js';
 
-export function integrationConfig(): ConfigService {
-  return new ConfigService(integrationEnv(getTestDatabaseUrl()));
+export function integrationConfig(
+  overrides: Record<string, string> = {},
+): ConfigService {
+  return new ConfigService({
+    ...integrationEnv(getTestDatabaseUrl()),
+    ...overrides,
+  });
 }
 
 export async function createPrisma(): Promise<PrismaService> {

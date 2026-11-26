@@ -92,7 +92,8 @@ export class UsersService {
   async list({ limit = 20, cursor }: ListUsersInput): Promise<UserPage> {
     const rows = await this.prisma.user.findMany({
       take: limit + 1,
-      ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+      // Keyset paging treats any valid UUID as a position, even one with no row.
+      ...(cursor ? { where: { id: { gt: cursor } } } : {}),
       orderBy: { id: 'asc' },
       omit: { passwordHash: true },
     });
