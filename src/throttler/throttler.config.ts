@@ -12,7 +12,17 @@ function isRoute(
   path: string,
 ): boolean {
   const request = context.switchToHttp().getRequest<RequestLike>();
-  return request.method === method && request.path === path;
+  // Express matches paths case-insensitively and tolerates trailing slashes,
+  // but req.path keeps the client's spelling. The matched route is canonical,
+  // so casing/slash variants share one limiter bucket. The fallback covers
+  // guards that run before route matching.
+  const matchedPath =
+    typeof request.route?.path === 'string'
+      ? request.route.path
+      : typeof request.path === 'string'
+        ? request.path.replace(/\/+$/, '').toLowerCase()
+        : '';
+  return request.method === method && matchedPath === path;
 }
 
 function ipTracker(request: RequestLike): string {

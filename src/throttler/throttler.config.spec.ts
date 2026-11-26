@@ -18,9 +18,15 @@ function throttlers(): NamedThrottler[] {
   return options.throttlers;
 }
 
-function contextFor(method: string, path: string): ExecutionContext {
+function contextFor(
+  method: string,
+  path: string,
+  routePath?: string,
+): ExecutionContext {
   return {
-    switchToHttp: () => ({ getRequest: () => ({ method, path }) }),
+    switchToHttp: () => ({
+      getRequest: () => ({ method, path, route: routePath ? { path: routePath } : undefined }),
+    }),
   } as unknown as ExecutionContext;
 }
 
@@ -49,6 +55,29 @@ describe('buildThrottlerOptions', () => {
     expect(throttler.skipIf!(contextFor('POST', path))).toBe(false);
     expect(throttler.skipIf!(contextFor('POST', '/health'))).toBe(true);
     expect(throttler.skipIf!(contextFor('GET', path))).toBe(true);
+  });
+
+  it('uses the canonical matched route for casing and slash variants', () => {
+    for (const name of [
+      THROTTLER_NAMES.loginIp,
+      THROTTLER_NAMES.registerIp,
+      THROTTLER_NAMES.refreshIp,
+    ]) {
+      expect(
+        find(name).skipIf!(contextFor('POST', '/AUTH/LOGIN/', '/auth/login')),
+      ).toBe(name === THROTTLER_NAMES.loginIp ? false : true);
+      expect(
+        find(name).skipIf!(contextFor('POST', '/auth/login/', '/auth/login')),
+      ).toBe(name === THROTTLER_NAMES.loginIp ? false : true);
+    }
+  });
+
+  it('normalizes the raw path when no route was matched', () => {
+    expect(
+      find(THROTTLER_NAMES.loginIp).skipIf!(
+        contextFor('POST', '/AUTH/LOGIN/'),
+      ),
+    ).toBe(false);
   });
 
   it('tracks IP addresses and falls back for missing IPs', () => {

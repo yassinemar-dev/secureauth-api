@@ -188,6 +188,120 @@ describe('Hardening (e2e)', () => {
     expect(JSON.stringify(blocked.body)).not.toContain(email);
   });
 
+  it('blocks the sixth login with a trailing slash from the same IP', async () => {
+    const server = app!.getHttpServer();
+    const user = await addUser('slash-login@example.com');
+
+    for (let attempt = 1; attempt <= 5; attempt += 1) {
+      await request(server)
+        .post('/auth/login/')
+        .send({ email: user.email, password: validPassword })
+        .expect(200);
+    }
+
+    await request(server)
+      .post('/auth/login/')
+      .send({ email: user.email, password: validPassword })
+      .expect(429);
+  });
+
+  it('blocks the sixth uppercase login from the same IP', async () => {
+    const server = app!.getHttpServer();
+    const user = await addUser('case-login@example.com');
+
+    for (let attempt = 1; attempt <= 5; attempt += 1) {
+      await request(server)
+        .post('/AUTH/LOGIN')
+        .send({ email: user.email, password: validPassword })
+        .expect(200);
+    }
+
+    await request(server)
+      .post('/AUTH/LOGIN')
+      .send({ email: user.email, password: validPassword })
+      .expect(429);
+  });
+
+  it('blocks the sixth mixed-case login from the same IP', async () => {
+    const server = app!.getHttpServer();
+    const user = await addUser('mixed-case-login@example.com');
+
+    for (let attempt = 1; attempt <= 5; attempt += 1) {
+      await request(server)
+        .post('/auth/Login/')
+        .send({ email: user.email, password: validPassword })
+        .expect(200);
+    }
+
+    await request(server)
+      .post('/auth/Login/')
+      .send({ email: user.email, password: validPassword })
+      .expect(429);
+  });
+
+  it('keeps SkipThrottle effective on casing and slash variants of /health', async () => {
+    const server = app!.getHttpServer();
+    for (const path of ['/health', '/health/', '/HEALTH']) {
+      resetThrottler();
+      for (let attempt = 0; attempt < 101; attempt += 1) {
+        await request(server).get(path).expect(200);
+      }
+    }
+  });
+
+  it('shares one login bucket across canonical and variant paths', async () => {
+    const server = app!.getHttpServer();
+    const email = 'mixed-path@example.com';
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await request(server)
+        .post('/auth/login')
+        .send({ email, password: 'wrong-password-123' })
+        .expect(401);
+    }
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await request(server)
+        .post('/auth/login/')
+        .send({ email, password: 'wrong-password-123' })
+        .expect(401);
+    }
+
+    await request(server)
+      .post('/auth/login/')
+      .send({ email, password: 'wrong-password-123' })
+      .expect(429);
+  });
+
+  it('blocks the sixth registration with a trailing slash from the same IP', async () => {
+    const server = app!.getHttpServer();
+
+    for (let attempt = 1; attempt <= 5; attempt += 1) {
+      await request(server)
+        .post('/auth/register/')
+        .send({
+          email: `slash-register${attempt}@example.com`,
+          password: validPassword,
+        })
+        .expect(201);
+    }
+
+    await request(server)
+      .post('/auth/register/')
+      .send({ email: 'slash-register6@example.com', password: validPassword })
+      .expect(429);
+  });
+
+  it('blocks the twenty-first refresh with a trailing slash from the same IP', async () => {
+    const server = app!.getHttpServer();
+    const body = { refreshToken: 'not-a-real-refresh-token-but-long-enough' };
+
+    for (let attempt = 1; attempt <= 20; attempt += 1) {
+      await request(server).post('/auth/refresh/').send(body).expect(401);
+    }
+
+    await request(server).post('/auth/refresh/').send(body).expect(429);
+  });
+
   it('blocks the sixth registration from the same IP', async () => {
     const server = app!.getHttpServer();
 
