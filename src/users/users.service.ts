@@ -10,6 +10,16 @@ export interface CreateUserInput {
   password: string;
 }
 
+export interface ListUsersInput {
+  limit?: number;
+  cursor?: string;
+}
+
+export interface UserPage {
+  items: SafeUser[];
+  nextCursor: string | null;
+}
+
 export function normalizeEmail(email: string): string {
   return email.trim().toLowerCase();
 }
@@ -72,5 +82,33 @@ export class UsersService {
       data: { passwordHash },
       omit: { passwordHash: true },
     });
+  }
+
+  async list({ limit = 20, cursor }: ListUsersInput): Promise<UserPage> {
+    const rows = await this.prisma.user.findMany({
+      take: limit + 1,
+      ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+      orderBy: { id: 'asc' },
+      omit: { passwordHash: true },
+    });
+
+    const hasMore = rows.length > limit;
+    const items = hasMore ? rows.slice(0, limit) : rows;
+    return {
+      items,
+      nextCursor: hasMore ? (items[items.length - 1]?.id ?? null) : null,
+    };
+  }
+
+  updateRole(id: string, role: Role): Promise<SafeUser> {
+    return this.prisma.user.update({
+      where: { id },
+      data: { role },
+      omit: { passwordHash: true },
+    });
+  }
+
+  countByRole(role: Role): Promise<number> {
+    return this.prisma.user.count({ where: { role } });
   }
 }

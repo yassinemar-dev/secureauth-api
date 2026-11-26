@@ -1,7 +1,7 @@
 import { ConflictException } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { vi } from 'vitest';
-import { Prisma } from '../generated/prisma/client.js';
+import { Prisma, Role } from '../generated/prisma/client.js';
 import { PasswordService } from '../password/password.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import {
@@ -13,6 +13,8 @@ import {
 describe('UsersService', () => {
   const userCreate = vi.fn();
   const userFindUnique = vi.fn();
+  const userFindMany = vi.fn();
+  const userCount = vi.fn();
   const userUpdate = vi.fn();
   const hash = vi.fn();
   let service: UsersService;
@@ -36,6 +38,8 @@ describe('UsersService', () => {
             user: {
               create: userCreate,
               findUnique: userFindUnique,
+              findMany: userFindMany,
+              count: userCount,
               update: userUpdate,
             },
           },
@@ -123,5 +127,56 @@ describe('UsersService', () => {
       omit: { passwordHash: true },
     });
     expect(result).not.toHaveProperty('passwordHash');
+  });
+
+  it('lists users with cursor pagination and never returns passwordHash', async () => {
+    const rows = [
+      safeUser,
+      { ...safeUser, id: 'user-2' },
+      { ...safeUser, id: 'user-3' },
+    ];
+    userFindMany.mockResolvedValue(rows);
+
+    const page = await service.list({ limit: 2 });
+
+    expect(userFindMany).toHaveBeenCalledWith({
+      take: 3,
+      orderBy: { id: 'asc' },
+      omit: { passwordHash: true },
+    });
+    expect(page.items.map((item) => item.id)).toEqual(['user-1', 'user-2']);
+    expect(page.nextCursor).toBe('user-2');
+    expect(page.items.every((item) => !('passwordHash' in item))).toBe(true);
+
+    await service.list({ limit: 2, cursor: 'user-1' });
+    expect(userFindMany).toHaveBeenLastCalledWith({
+      take: 3,
+      cursor: { id: 'user-1' },
+      skip: 1,
+      orderBy: { id: 'asc' },
+      omit: { passwordHash: true },
+    });
+  });
+
+  it('updates a role without returning passwordHash', async () => {
+    const admin = { ...safeUser, role: Role.ADMIN };
+    userUpdate.mockResolvedValue(admin);
+
+    const result = await service.updateRole('user-1', Role.ADMIN);
+
+    expect(userUpdate).toHaveBeenCalledWith({
+      where: { id: 'user-1' },
+      data: { role: Role.ADMIN },
+      omit: { passwordHash: true },
+    });
+    expect(result.role).toBe(Role.ADMIN);
+    expect(result).not.toHaveProperty('passwordHash');
+  });
+
+  it('counts users by role', async () => {
+    userCount.mockResolvedValue(2);
+
+    await expect(service.countByRole(Role.ADMIN)).resolves.toBe(2);
+    expect(userCount).toHaveBeenCalledWith({ where: { role: Role.ADMIN } });
   });
 });

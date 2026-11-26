@@ -27,6 +27,6 @@ import { ttlToSeconds } from './ttl.js';
   ],
   controllers: [AuthController],
   providers: [AuthService, RefreshTokenService],
-  exports: [AuthService, RefreshTokenService],
+  exports: [AuthService, RefreshTokenService, JwtModule],
 })
 export class AuthModule {}
