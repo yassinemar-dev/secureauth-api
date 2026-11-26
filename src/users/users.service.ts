@@ -65,4 +65,12 @@ export class UsersService {
       where: { email: normalizeEmail(email) },
     });
   }
+
+  updatePasswordHash(id: string, passwordHash: string): Promise<SafeUser> {
+    return this.prisma.user.update({
+      where: { id },
+      data: { passwordHash },
+      omit: { passwordHash: true },
+    });
+  }
 }

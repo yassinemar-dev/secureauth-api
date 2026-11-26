@@ -13,6 +13,7 @@ import {
 describe('UsersService', () => {
   const userCreate = vi.fn();
   const userFindUnique = vi.fn();
+  const userUpdate = vi.fn();
   const hash = vi.fn();
   let service: UsersService;
 
@@ -31,7 +32,13 @@ describe('UsersService', () => {
         UsersService,
         {
           provide: PrismaService,
-          useValue: { user: { create: userCreate, findUnique: userFindUnique } },
+          useValue: {
+            user: {
+              create: userCreate,
+              findUnique: userFindUnique,
+              update: userUpdate,
+            },
+          },
         },
         { provide: PasswordService, useValue: { hash } },
       ],
@@ -103,5 +110,18 @@ describe('UsersService', () => {
       where: { email: 'user@example.com' },
       omit: { passwordHash: true },
     });
+  });
+
+  it('updates a password hash without returning it', async () => {
+    userUpdate.mockResolvedValue(safeUser);
+
+    const result = await service.updatePasswordHash('user-1', 'new-hash');
+
+    expect(userUpdate).toHaveBeenCalledWith({
+      where: { id: 'user-1' },
+      data: { passwordHash: 'new-hash' },
+      omit: { passwordHash: true },
+    });
+    expect(result).not.toHaveProperty('passwordHash');
   });
 });

@@ -6,4 +6,5 @@ export const testEnv: Record<string, string> = {
     'postgresql://test_user:test_password@localhost:5432/secureauth_test',
   JWT_ACCESS_SECRET: 'test_only_access_secret_do_not_use_1234567890',
   JWT_REFRESH_SECRET: 'test_only_refresh_secret_do_not_use_0987654321',
+  JWT_ACCESS_TTL: '15m',
 };
