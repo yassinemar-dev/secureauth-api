@@ -2,6 +2,7 @@ import type { INestApplication } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { json, urlencoded } from 'express';
 import helmet from 'helmet';
+import { configureDocs } from './docs/swagger.setup.js';
 
 const BODY_LIMIT = '100kb';
 const CORS_METHODS = ['GET', 'POST', 'PATCH', 'DELETE'];
@@ -42,4 +43,6 @@ export function configureApp(app: INestApplication): void {
     'trust proxy',
     parseTrustProxy(config.get<string>('TRUST_PROXY') ?? 'false'),
   );
+
+  configureDocs(app);
 }

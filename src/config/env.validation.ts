@@ -61,6 +61,10 @@ const trustProxy = Joi.alternatives()
   .try(Joi.string().valid('false'), Joi.string().pattern(/^[1-9]\d*$/))
   .default('false');
 
+// Docs are useful locally but off by default in production: a smaller attack
+// surface and no free API map for unauthenticated callers.
+const enableDocs = Joi.string().valid('true', 'false');
+
 export const envValidationSchema = Joi.object({
   NODE_ENV: Joi.string()
     .valid('development', 'test', 'production')
@@ -78,6 +82,12 @@ export const envValidationSchema = Joi.object({
   THROTTLE_LIMIT: Joi.number().integer().min(1).default(100),
   CORS_ORIGINS: corsOrigins,
   TRUST_PROXY: trustProxy,
+  ENABLE_DOCS: Joi.when('NODE_ENV', {
+    is: 'production',
+    // oxlint-disable-next-line unicorn/no-thenable -- Joi's conditional API requires a `then` key.
+    then: enableDocs.default('false'),
+    otherwise: enableDocs.default('true'),
+  }),
 })
   .custom((value, helpers) => {
     if (value.JWT_ACCESS_SECRET === value.JWT_REFRESH_SECRET) {

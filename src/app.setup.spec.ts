@@ -29,6 +29,7 @@ describe('configureApp', () => {
     const { app, use, disable, set, enableCors } = makeApp({
       CORS_ORIGINS: 'https://app.example.com',
       TRUST_PROXY: 'false',
+      ENABLE_DOCS: 'false',
     });
 
     configureApp(app);
@@ -48,6 +49,7 @@ describe('configureApp', () => {
     const { app, enableCors, set } = makeApp({
       CORS_ORIGINS: 'https://one.example.com, https://two.example.com',
       TRUST_PROXY: '2',
+      ENABLE_DOCS: 'false',
     });
 
     configureApp(app);
@@ -64,6 +66,7 @@ describe('configureApp', () => {
     const { app, enableCors, set } = makeApp({
       CORS_ORIGINS: '',
       TRUST_PROXY: 'false',
+      ENABLE_DOCS: 'false',
     });
 
     configureApp(app);

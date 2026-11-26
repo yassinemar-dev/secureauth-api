@@ -14,6 +14,7 @@ A small NestJS authentication service: email/password registration, HS256 access
 - Helmet, exact-origin CORS, body limits, explicit proxy trust and named in-memory rate limits.
 - Production env guard that rejects placeholder secrets and the local development database password.
 - Separate unit, e2e (do not use the database) and integration (real Postgres) suites, plus CLI utilities.
+- Conditional Swagger UI at `/docs` with raw OpenAPI JSON at `/docs-json` (off by default in production).
 
 ## Architecture
 
@@ -57,6 +58,20 @@ npm run start:dev
 ```
 
 Verify with `curl http://localhost:3000/health`. Build and lint with `npm run build` and `npm run lint`.
+
+## Try it (Swagger UI)
+
+With the development server from `npm run start:dev` running:
+
+1. Open <http://localhost:3000/docs>.
+2. Try `POST /auth/register` with an `example.com` address and a password of at least 12 characters.
+3. Try `POST /auth/login` with the same credentials and copy the `accessToken` from the response.
+4. Click **Authorize**, paste the token (without the `Bearer ` prefix) and confirm.
+5. Call `GET /auth/me` to see the authenticated profile.
+
+The raw OpenAPI document is at <http://localhost:3000/docs-json>. Docs are enabled by default outside production but **disabled by default in production** to keep the attack surface small and avoid handing unauthenticated callers a free API map. Set `ENABLE_DOCS=true` explicitly only when you intend to expose them.
+
+Screenshot placeholder: _[add Swagger UI screenshot here]_.
 
 Bootstrap the first admin after registering a user:
 

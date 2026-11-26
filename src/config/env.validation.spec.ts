@@ -1,8 +1,14 @@
 import { testEnv } from '../../test/env.js';
 import { envValidationSchema } from './env.validation.js';
 
-function validate(overrides: Record<string, string>) {
-  return envValidationSchema.validate({ ...testEnv, ...overrides });
+function validate(overrides: Record<string, string | undefined>) {
+  const input: Record<string, string | undefined> = { ...testEnv, ...overrides };
+  for (const [key, value] of Object.entries(overrides)) {
+    if (value === undefined) {
+      delete input[key];
+    }
+  }
+  return envValidationSchema.validate(input);
 }
 
 describe('envValidationSchema', () => {
@@ -112,5 +118,39 @@ describe('envValidationSchema', () => {
           'postgresql://secureauth:secureauth@localhost:5432/secureauth?schema=public',
       }).error,
     ).toBeUndefined();
+  });
+
+  it('defaults ENABLE_DOCS to true outside production', () => {
+    expect(validate({ ENABLE_DOCS: undefined }).value.ENABLE_DOCS).toBe('true');
+    expect(
+      validate({ NODE_ENV: 'development', ENABLE_DOCS: undefined }).value
+        .ENABLE_DOCS,
+    ).toBe('true');
+    expect(
+      validate({ NODE_ENV: 'test', ENABLE_DOCS: undefined }).value.ENABLE_DOCS,
+    ).toBe('true');
+  });
+
+  it('defaults ENABLE_DOCS to false in production', () => {
+    expect(
+      validate({ NODE_ENV: 'production', ENABLE_DOCS: undefined }).value
+        .ENABLE_DOCS,
+    ).toBe('false');
+  });
+
+  it('honours an explicit ENABLE_DOCS value in production', () => {
+    expect(
+      validate({ NODE_ENV: 'production', ENABLE_DOCS: 'true' }).value
+        .ENABLE_DOCS,
+    ).toBe('true');
+    expect(
+      validate({ NODE_ENV: 'production', ENABLE_DOCS: 'false' }).value
+        .ENABLE_DOCS,
+    ).toBe('false');
+  });
+
+  it('rejects an invalid ENABLE_DOCS value', () => {
+    expect(validate({ ENABLE_DOCS: 'yes' }).error).toBeDefined();
+    expect(validate({ ENABLE_DOCS: 'TRUE' }).error).toBeDefined();
   });
 });

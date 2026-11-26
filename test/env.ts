@@ -14,4 +14,5 @@ export const testEnv: Record<string, string> = {
   // One trusted proxy lets tests vary req.ip with X-Forwarded-For.
   CORS_ORIGINS: 'https://app.example.com',
   TRUST_PROXY: '1',
+  ENABLE_DOCS: 'true',
 };
