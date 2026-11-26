@@ -36,7 +36,8 @@ describe('PasswordService', () => {
     const current = await service.hash('password');
     const weaker = await argon2.hash('password', {
       ...ARGON2ID_PARAMS,
-      memoryCost: 8192,
+      memoryCost: 32768,
+      timeCost: 2,
     });
 
     expect(service.needsRehash(current)).toBe(false);
