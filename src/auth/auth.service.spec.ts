@@ -7,6 +7,7 @@ import { PasswordService } from '../password/password.service.js';
 import { UsersService, type SafeUser } from '../users/users.service.js';
 import { AuthService } from './auth.service.js';
 import type { JwtPayload } from './auth.types.js';
+import type { RefreshTokenService } from './refresh-token.service.js';
 
 describe('AuthService', () => {
   const usersCreate = vi.fn();
@@ -16,6 +17,10 @@ describe('AuthService', () => {
   const passwordHash = vi.fn();
   const passwordVerify = vi.fn();
   const passwordNeedsRehash = vi.fn();
+  const refreshIssue = vi.fn();
+  const refreshRotate = vi.fn();
+  const refreshRevokeFamily = vi.fn();
+  const refreshRevokeAllForUser = vi.fn();
   const configGetOrThrow = vi.fn();
 
   const user: User = {
@@ -45,6 +50,7 @@ describe('AuthService', () => {
     passwordHash.mockResolvedValue('dummy-hash');
     passwordVerify.mockResolvedValue(true);
     passwordNeedsRehash.mockReturnValue(false);
+    refreshIssue.mockResolvedValue('raw-refresh-token');
     configGetOrThrow.mockImplementation((key: string) =>
       key === 'JWT_ACCESS_TTL' ? '15m' : undefined,
     );
@@ -62,6 +68,12 @@ describe('AuthService', () => {
         needsRehash: passwordNeedsRehash,
       } as unknown as PasswordService,
       jwt,
+      {
+        issue: refreshIssue,
+        rotate: refreshRotate,
+        revokeFamily: refreshRevokeFamily,
+        revokeAllForUser: refreshRevokeAllForUser,
+      } as unknown as RefreshTokenService,
       { getOrThrow: configGetOrThrow } as unknown as ConfigService,
     );
   });
@@ -94,6 +106,8 @@ describe('AuthService', () => {
 
     expect(payload.sub).toBe(user.id);
     expect(payload.role).toBe(Role.USER);
+    expect(result.refreshToken).toBe('raw-refresh-token');
+    expect(refreshIssue).toHaveBeenCalledWith(user.id);
     expect(result.tokenType).toBe('Bearer');
     expect(result.expiresIn).toBe(900);
   });
@@ -146,5 +160,36 @@ describe('AuthService', () => {
       user.id,
       'rehashed-hash',
     );
+  });
+
+  it('refresh uses the current role from the database for the new access token', async () => {
+    refreshRotate.mockResolvedValue({
+      userId: user.id,
+      familyId: 'family-1',
+      token: 'new-raw-refresh-token',
+    });
+    usersFindById.mockResolvedValue({ ...safeUser, role: Role.ADMIN });
+
+    const result = await service.refresh('old-raw-refresh-token');
+    const payload = await jwt.verifyAsync<JwtPayload>(result.accessToken, {
+      algorithms: ['HS256'],
+    });
+
+    expect(payload.role).toBe(Role.ADMIN);
+    expect(result.refreshToken).toBe('new-raw-refresh-token');
+  });
+
+  it('refresh rejects and revokes the family when the user is gone', async () => {
+    refreshRotate.mockResolvedValue({
+      userId: user.id,
+      familyId: 'family-1',
+      token: 'new-raw-refresh-token',
+    });
+    usersFindById.mockResolvedValue(null);
+
+    await expect(service.refresh('old-raw-refresh-token')).rejects.toThrow(
+      'Invalid refresh token',
+    );
+    expect(refreshRevokeAllForUser).toHaveBeenCalledWith(user.id);
   });
 });

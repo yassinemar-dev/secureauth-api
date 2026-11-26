@@ -6,6 +6,10 @@ import { UsersService, type SafeUser } from '../users/users.service.js';
 import type { JwtPayload, LoginResponse } from './auth.types.js';
 import { LoginDto } from './dto/login.dto.js';
 import { RegisterDto } from './dto/register.dto.js';
+import {
+  INVALID_REFRESH_TOKEN,
+  RefreshTokenService,
+} from './refresh-token.service.js';
 import { ttlToSeconds } from './ttl.js';
 
 const DUMMY_HASH_PASSWORD = 'timing-equalizer-not-a-user-password';
@@ -19,10 +23,16 @@ export class AuthService {
     private readonly users: UsersService,
     private readonly password: PasswordService,
     private readonly jwt: JwtService,
+    private readonly refreshTokens: RefreshTokenService,
     config: ConfigService,
   ) {
     this.expiresIn = ttlToSeconds(config.getOrThrow<string>('JWT_ACCESS_TTL'));
     this.dummyHash = this.password.hash(DUMMY_HASH_PASSWORD);
+  }
+
+  private async signAccessToken(user: SafeUser): Promise<string> {
+    const payload: JwtPayload = { sub: user.id, role: user.role };
+    return this.jwt.signAsync(payload, { algorithm: 'HS256' });
   }
 
   register(dto: RegisterDto): Promise<SafeUser> {
@@ -44,12 +54,37 @@ export class AuthService {
       await this.users.updatePasswordHash(user.id, rehashed);
     }
 
-    const payload: JwtPayload = { sub: user.id, role: user.role };
-    const accessToken = await this.jwt.signAsync(payload, {
-      algorithm: 'HS256',
-    });
+    return {
+      accessToken: await this.signAccessToken(user),
+      refreshToken: await this.refreshTokens.issue(user.id),
+      tokenType: 'Bearer',
+      expiresIn: this.expiresIn,
+    };
+  }
 
-    return { accessToken, tokenType: 'Bearer', expiresIn: this.expiresIn };
+  async refresh(rawToken: string): Promise<LoginResponse> {
+    const rotated = await this.refreshTokens.rotate(rawToken);
+    // Reload the user so the access token carries the current DB role.
+    const user = await this.users.findById(rotated.userId);
+    if (!user) {
+      await this.refreshTokens.revokeAllForUser(rotated.userId);
+      throw new UnauthorizedException(INVALID_REFRESH_TOKEN);
+    }
+
+    return {
+      accessToken: await this.signAccessToken(user),
+      refreshToken: rotated.token,
+      tokenType: 'Bearer',
+      expiresIn: this.expiresIn,
+    };
+  }
+
+  async logout(rawToken: string): Promise<void> {
+    await this.refreshTokens.revokeFamily(rawToken);
+  }
+
+  async logoutAll(userId: string): Promise<void> {
+    await this.refreshTokens.revokeAllForUser(userId);
   }
 
   async me(id: string): Promise<SafeUser> {

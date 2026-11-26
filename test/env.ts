@@ -7,4 +7,5 @@ export const testEnv: Record<string, string> = {
   JWT_ACCESS_SECRET: 'test_only_access_secret_do_not_use_1234567890',
   JWT_REFRESH_SECRET: 'test_only_refresh_secret_do_not_use_0987654321',
   JWT_ACCESS_TTL: '15m',
+  JWT_REFRESH_TTL: '7d',
 };

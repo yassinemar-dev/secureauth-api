@@ -5,10 +5,12 @@ import { PasswordModule } from '../password/password.module.js';
 import { UsersModule } from '../users/users.module.js';
 import { AuthController } from './auth.controller.js';
 import { AuthService } from './auth.service.js';
+import { RefreshTokenService } from './refresh-token.service.js';
 import { ttlToSeconds } from './ttl.js';
 
 @Module({
   imports: [
+    ConfigModule,
     UsersModule,
     PasswordModule,
     JwtModule.registerAsync({
@@ -24,7 +26,7 @@ import { ttlToSeconds } from './ttl.js';
     }),
   ],
   controllers: [AuthController],
-  providers: [AuthService],
-  exports: [AuthService],
+  providers: [AuthService, RefreshTokenService],
+  exports: [AuthService, RefreshTokenService],
 })
 export class AuthModule {}

@@ -1,0 +1,142 @@
+import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { createHmac, randomBytes, randomUUID } from 'node:crypto';
+import { PrismaService } from '../prisma/prisma.service.js';
+import { ttlToSeconds } from './ttl.js';
+
+export const INVALID_REFRESH_TOKEN = 'Invalid refresh token';
+
+// A short grace period avoids deleting a token that expired while a request was in flight.
+const PURGE_GRACE_MS = 60_000;
+
+type RefreshClient = Pick<PrismaService, 'refreshToken'>;
+
+interface RotatedToken {
+  userId: string;
+  familyId: string;
+  token: string;
+}
+
+type RotateOutcome = { ok: true; value: RotatedToken } | { ok: false };
+
+@Injectable()
+export class RefreshTokenService {
+  private readonly secret: string;
+  private readonly refreshTtlSeconds: number;
+
+  constructor(
+    private readonly prisma: PrismaService,
+    config: ConfigService,
+  ) {
+    this.secret = config.getOrThrow<string>('JWT_REFRESH_SECRET');
+    this.refreshTtlSeconds = ttlToSeconds(
+      config.getOrThrow<string>('JWT_REFRESH_TTL'),
+    );
+  }
+
+  // JWT_REFRESH_SECRET doubles as the HMAC pepper: only the server can derive
+  // these hashes, and raw refresh tokens are never written to the database.
+  private hashToken(rawToken: string): string {
+    return createHmac('sha256', this.secret).update(rawToken).digest('hex');
+  }
+
+  private unauthorized(): UnauthorizedException {
+    return new UnauthorizedException(INVALID_REFRESH_TOKEN);
+  }
+
+  private async issueOn(
+    client: RefreshClient,
+    userId: string,
+    familyId: string,
+  ): Promise<string> {
+    const token = randomBytes(32).toString('base64url');
+    await client.refreshToken.create({
+      data: {
+        userId,
+        familyId,
+        tokenHash: this.hashToken(token),
+        expiresAt: new Date(Date.now() + this.refreshTtlSeconds * 1000),
+      },
+    });
+    return token;
+  }
+
+  private async revokeFamilyOn(
+    client: RefreshClient,
+    familyId: string,
+  ): Promise<void> {
+    await client.refreshToken.updateMany({
+      where: { familyId, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
+  }
+
+  issue(userId: string, familyId: string = randomUUID()): Promise<string> {
+    return this.issueOn(this.prisma, userId, familyId);
+  }
+
+  async rotate(rawToken: string): Promise<RotatedToken> {
+    const outcome = await this.prisma.$transaction(
+      async (tx): Promise<RotateOutcome> => {
+        const row = await tx.refreshToken.findUnique({
+          where: { tokenHash: this.hashToken(rawToken) },
+        });
+        if (!row || row.expiresAt.getTime() <= Date.now()) {
+          return { ok: false };
+        }
+
+        if (row.revokedAt) {
+          await this.revokeFamilyOn(tx, row.familyId);
+          return { ok: false };
+        }
+
+        const revoked = await tx.refreshToken.updateMany({
+          where: { id: row.id, revokedAt: null },
+          data: { revokedAt: new Date() },
+        });
+        if (revoked.count !== 1) {
+          await this.revokeFamilyOn(tx, row.familyId);
+          return { ok: false };
+        }
+
+        const token = await this.issueOn(tx, row.userId, row.familyId);
+        return {
+          ok: true,
+          value: { userId: row.userId, familyId: row.familyId, token },
+        };
+      },
+    );
+
+    // Revocations above must commit before the 401 is thrown.
+    if (!outcome.ok) {
+      throw this.unauthorized();
+    }
+    return outcome.value;
+  }
+
+  async revokeFamily(rawToken: string): Promise<void> {
+    await this.prisma.$transaction(async (tx) => {
+      const row = await tx.refreshToken.findUnique({
+        where: { tokenHash: this.hashToken(rawToken) },
+      });
+      if (!row) {
+        return;
+      }
+      await this.revokeFamilyOn(tx, row.familyId);
+    });
+  }
+
+  async revokeAllForUser(userId: string): Promise<void> {
+    await this.prisma.refreshToken.updateMany({
+      where: { userId, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
+  }
+
+  async purgeExpired(): Promise<void> {
+    const cutoff = new Date(Date.now() - PURGE_GRACE_MS);
+    await this.prisma.refreshToken.deleteMany({
+      where: { expiresAt: { lt: cutoff } },
+    });
+  }
+}
