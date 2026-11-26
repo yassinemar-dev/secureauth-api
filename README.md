@@ -18,9 +18,9 @@ npm run start:dev
 - Refresh tokens are opaque 32-byte random strings, not JWTs. Rotation keeps the family id; replaying a rotated token revokes the whole family.
 - Only an HMAC-SHA256 hash of each refresh token is stored. `JWT_REFRESH_SECRET` is reused as the HMAC pepper, so the raw token never reaches the database.
 - Authentication failures use generic messages; login returns `Invalid credentials`, and refresh failures return `Invalid refresh token`.
-- RBAC is default deny: protected routes must explicitly declare `@Roles(...)` and use `@UseGuards(JwtAuthGuard, RolesGuard)`, in that order. A route with no `@Roles` metadata is allowed by `RolesGuard` but is still authenticated by `JwtAuthGuard`; it never grants admin-only behaviour.
+- RBAC is default deny: protected routes must explicitly declare `@Roles(...)` and use `@UseGuards(JwtAuthGuard, RolesGuard)`, in that order. If `RolesGuard` is used without `@Roles` metadata, it fails closed with `403 Forbidden`.
 - Authorisation reads the user's current role from the database with `UsersService.findById`, not from the JWT. A deleted user returns `401`; a user whose current role is not allowed returns `403 Forbidden`.
-- An admin cannot change their own role. Demoting the last remaining admin is refused with `409`. A successful role change revokes every refresh token of the target user.
+- An admin cannot change their own role. The last-admin check and role update run in one Serializable transaction; serialization failures are retried and then become `409`. A successful role change revokes every refresh token of the target user.
 - The first admin is bootstrapped with the `admin:promote` CLI. It normalises the email, requires an existing user, promotes that user to `ADMIN`, revokes their refresh tokens, and prints only safe status/error messages.
 
 ## Bootstrap the first admin
@@ -34,6 +34,24 @@ npm run admin:promote -- user@example.com
 
 Run it only against a database you intend to modify. It never prints passwords, tokens, or hashes.
 
+## Hardening
+
+`configureApp()` in `src/app.setup.ts` is called by `main.ts` and by every e2e app, so production and tests share the same HTTP hardening. It applies Helmet, disables `x-powered-by`, sets a 100kb JSON/urlencoded body limit, configures an exact-origin CORS allowlist, and applies Express `trust proxy`. Rate limiting is global through `@nestjs/throttler`.
+
+| Route | Limit |
+| --- | --- |
+| Default (all routes except `/health`) | `THROTTLE_LIMIT` per `THROTTLE_TTL_MS` per IP (defaults: 100 / 60s) |
+| `POST /auth/login` | 5 per minute per IP **and** 10 per 15 minutes per normalized email |
+| `POST /auth/register` | 5 per hour per IP |
+| `POST /auth/refresh` | 20 per minute per IP |
+| `GET /health` | Excluded from throttling |
+
+Rejected requests return `429` with a generic body and a `Retry-After` header. Emails and tokens are never placed in rate-limit responses or logs.
+
+- `CORS_ORIGINS` is a comma-separated list of exact origins; empty means no cross-origin requests. Wildcards such as `*` are rejected. Allowed methods are `GET`, `POST`, `PATCH` and `DELETE`; allowed request headers are `Content-Type` and `Authorization`; credentials are disabled.
+- `TRUST_PROXY=false` ignores `X-Forwarded-For`. A positive integer trusts that many proxy hops, so `X-Forwarded-For` can affect `req.ip` and IP-based limits. The string `true` is intentionally rejected because it trusts arbitrary client-supplied headers.
+- Helmet adds security headers such as `X-Content-Type-Options` and `Strict-Transport-Security`.
+
 Known trade-offs:
 
 - Registering an existing email returns `409`, which reveals that the email is already registered.
@@ -42,3 +60,6 @@ Known trade-offs:
 - Refresh sessions slide with no absolute session cap yet.
 - `purgeExpired()` is not scheduled, so expired rows accumulate until something calls it.
 - Changing `JWT_REFRESH_SECRET` invalidates all existing refresh tokens at once.
+- The throttler store is in-memory; multiple API instances need a shared store such as Redis.
+- Per-email login limiting allows a targeted lockout/DoS of one known account.
+- Rate limits are per instance, so effective limits scale with the number of instances until a shared store is added.
