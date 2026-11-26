@@ -3,6 +3,7 @@ import { Test } from '@nestjs/testing';
 import { randomUUID } from 'node:crypto';
 import request from 'supertest';
 import { App } from 'supertest/types.js';
+import { configureApp } from '../src/app.setup.js';
 import { AppModule } from '../src/app.module.js';
 import { Role, type User } from '../src/generated/prisma/client.js';
 import { PasswordService } from '../src/password/password.service.js';
@@ -13,6 +14,7 @@ import {
   type SafeUser,
 } from '../src/users/users.service.js';
 import { createInMemoryPrisma } from './in-memory-prisma.js';
+import { createThrottlerResetter } from './throttler-storage.js';
 
 function toSafeUser(user: User): SafeUser {
   const { id, email, role, createdAt, updatedAt } = user;
@@ -24,6 +26,7 @@ describe('Auth (e2e)', () => {
   let users: Map<string, User>;
   let password: PasswordService;
   let fakePrisma: ReturnType<typeof createInMemoryPrisma>;
+  let resetThrottler: () => void;
 
   const validPassword = 'correct horse battery staple';
 
@@ -100,13 +103,16 @@ describe('Auth (e2e)', () => {
       .useValue(fakeUsersService)
       .compile();
 
-    app = moduleFixture.createNestApplication();
+    app = moduleFixture.createNestApplication({ bodyParser: false });
+    configureApp(app);
+    resetThrottler = createThrottlerResetter(app);
     await app.init();
   });
 
   beforeEach(() => {
     users.clear();
     fakePrisma.clear();
+    resetThrottler();
   });
 
   afterAll(async () => {
