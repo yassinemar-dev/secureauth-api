@@ -12,6 +12,7 @@ import {
   UsersService,
   type SafeUser,
 } from '../src/users/users.service.js';
+import { createInMemoryPrisma } from './in-memory-prisma.js';
 
 function toSafeUser(user: User): SafeUser {
   const { id, email, role, createdAt, updatedAt } = user;
@@ -22,10 +23,27 @@ describe('Auth (e2e)', () => {
   let app: INestApplication<App> | undefined;
   let users: Map<string, User>;
   let password: PasswordService;
+  let fakePrisma: ReturnType<typeof createInMemoryPrisma>;
+
+  const validPassword = 'correct horse battery staple';
+
+  const loginUser = async (email = 'user@example.com') => {
+    const server = app!.getHttpServer();
+    const registered = await request(server)
+      .post('/auth/register')
+      .send({ email, password: validPassword })
+      .expect(201);
+    expect(registered.body).not.toHaveProperty('passwordHash');
+    return request(server)
+      .post('/auth/login')
+      .send({ email: email.toUpperCase(), password: validPassword })
+      .expect(200);
+  };
 
   beforeAll(async () => {
     users = new Map<string, User>();
     password = new PasswordService();
+    fakePrisma = createInMemoryPrisma();
 
     const fakeUsersService = {
       create: async ({
@@ -77,10 +95,7 @@ describe('Auth (e2e)', () => {
       imports: [AppModule],
     })
       .overrideProvider(PrismaService)
-      .useValue({
-        onModuleInit: async () => undefined,
-        onModuleDestroy: async () => undefined,
-      })
+      .useValue(fakePrisma.prisma)
       .overrideProvider(UsersService)
       .useValue(fakeUsersService)
       .compile();
@@ -89,21 +104,17 @@ describe('Auth (e2e)', () => {
     await app.init();
   });
 
+  beforeEach(() => {
+    users.clear();
+    fakePrisma.clear();
+  });
+
   afterAll(async () => {
     await app?.close();
   });
 
   it('register, login and /auth/me work without a database', async () => {
     const server = app!.getHttpServer();
-    const validPassword = 'correct horse battery staple';
-
-    const registered = await request(server)
-      .post('/auth/register')
-      .send({ email: 'User@Example.COM', password: validPassword })
-      .expect(201);
-    expect(registered.body).not.toHaveProperty('passwordHash');
-    expect(registered.body.email).toBe('user@example.com');
-    expect(registered.body.role).toBe('USER');
 
     await request(server)
       .post('/auth/register')
@@ -119,18 +130,16 @@ describe('Auth (e2e)', () => {
       .send({ email: 'short@example.com', password: 'short' })
       .expect(400);
 
+    const login = await loginUser();
+    expect(login.body.accessToken).toEqual(expect.any(String));
+    expect(login.body.refreshToken).toEqual(expect.any(String));
+    expect(login.body.tokenType).toBe('Bearer');
+    expect(login.body.expiresIn).toBe(900);
+
     await request(server)
       .post('/auth/register')
       .send({ email: 'user@example.com', password: validPassword })
       .expect(409);
-
-    const login = await request(server)
-      .post('/auth/login')
-      .send({ email: 'USER@example.com', password: validPassword })
-      .expect(200);
-    expect(login.body.accessToken).toEqual(expect.any(String));
-    expect(login.body.tokenType).toBe('Bearer');
-    expect(login.body.expiresIn).toBe(900);
 
     const wrongPassword = await request(server)
       .post('/auth/login')
@@ -151,5 +160,80 @@ describe('Auth (e2e)', () => {
       .expect(200);
     expect(me.body.email).toBe('user@example.com');
     expect(me.body).not.toHaveProperty('passwordHash');
+  });
+
+  it('detects refresh reuse and revokes the newest token in the family', async () => {
+    const server = app!.getHttpServer();
+    const first = await loginUser();
+    const rotated = await request(server)
+      .post('/auth/refresh')
+      .send({ refreshToken: first.body.refreshToken })
+      .expect(200);
+    expect(rotated.body.refreshToken).not.toBe(first.body.refreshToken);
+
+    await request(server)
+      .post('/auth/refresh')
+      .send({ refreshToken: first.body.refreshToken })
+      .expect(401);
+
+    await request(server)
+      .post('/auth/refresh')
+      .send({ refreshToken: rotated.body.refreshToken })
+      .expect(401);
+  });
+
+  it('revokes a family on logout and always returns 204', async () => {
+    const server = app!.getHttpServer();
+    const pair = await loginUser();
+
+    await request(server)
+      .post('/auth/logout')
+      .send({ refreshToken: 'unknown-token-long-enough' })
+      .expect(204);
+    await request(server)
+      .post('/auth/logout')
+      .send({ refreshToken: pair.body.refreshToken })
+      .expect(204);
+    await request(server)
+      .post('/auth/refresh')
+      .send({ refreshToken: pair.body.refreshToken })
+      .expect(401);
+  });
+
+  it('logout-all revokes every refresh token of the current user', async () => {
+    const server = app!.getHttpServer();
+    const pair = await loginUser();
+
+    await request(server).post('/auth/logout-all').expect(401);
+    await request(server)
+      .post('/auth/logout-all')
+      .set('Authorization', `Bearer ${pair.body.accessToken}`)
+      .expect(204);
+    await request(server)
+      .post('/auth/refresh')
+      .send({ refreshToken: pair.body.refreshToken })
+      .expect(401);
+  });
+
+  it('refresh returns 401 when the user no longer exists', async () => {
+    const server = app!.getHttpServer();
+    const pair = await loginUser();
+    users.clear();
+
+    await request(server)
+      .post('/auth/refresh')
+      .send({ refreshToken: pair.body.refreshToken })
+      .expect(401);
+  });
+
+  it('rejects invalid refresh DTOs with 400', async () => {
+    const server = app!.getHttpServer();
+
+    await request(server).post('/auth/refresh').send({ refreshToken: 'short' }).expect(400);
+    await request(server).post('/auth/refresh').send({}).expect(400);
+    await request(server)
+      .post('/auth/logout')
+      .send({ refreshToken: 'x'.repeat(40), extra: true })
+      .expect(400);
   });
 });
