@@ -1,5 +1,7 @@
 # SecureAuth API
 
+[![CI](https://github.com/yassinemar-dev/secureauth-api/actions/workflows/ci.yml/badge.svg)](https://github.com/yassinemar-dev/secureauth-api/actions/workflows/ci.yml)
+
 A production-grade authentication boilerplate built with NestJS, TypeScript, PostgreSQL, Prisma and Docker.
 
 ## Quick start
@@ -20,7 +22,7 @@ npm run start:dev
 - Authentication failures use generic messages; login returns `Invalid credentials`, and refresh failures return `Invalid refresh token`.
 - RBAC is default deny: protected routes must explicitly declare `@Roles(...)` and use `@UseGuards(JwtAuthGuard, RolesGuard)`, in that order. If `RolesGuard` is used without `@Roles` metadata, it fails closed with `403 Forbidden`.
 - Authorisation reads the user's current role from the database with `UsersService.findById`, not from the JWT. A deleted user returns `401`; a user whose current role is not allowed returns `403 Forbidden`.
-- An admin cannot change their own role. The last-admin check and role update run in one Serializable transaction; serialization failures are retried and then become `409`. A successful role change revokes every refresh token of the target user.
+- An admin cannot change their own role. The last-admin check and role update run in one Serializable transaction; serialization failures are retried and then become `409 Concurrent update, please retry`, which is deliberately distinct from the genuine `409 Unable to demote the last admin`. A successful role change revokes every refresh token of the target user.
 - The first admin is bootstrapped with the `admin:promote` CLI. It normalises the email, requires an existing user, promotes that user to `ADMIN`, revokes their refresh tokens, and prints only safe status/error messages.
 
 ## Bootstrap the first admin
@@ -63,3 +65,32 @@ Known trade-offs:
 - The throttler store is in-memory; multiple API instances need a shared store such as Redis.
 - Per-email login limiting allows a targeted lockout/DoS of one known account.
 - Rate limits are per instance, so effective limits scale with the number of instances until a shared store is added.
+
+## Testing
+
+| Command | Needs `.env`? | Needs Postgres? | What it covers |
+| --- | --- | --- | --- |
+| `npm test` | No | No | Unit tests with fakes |
+| `npm run test:cov` | No | No | The same unit tests plus thresholds: lines 80%, functions 80%, branches 70%, statements 80% |
+| `npm run test:e2e` | No | No | HTTP behaviour with in-memory fakes (including hardening and RBAC) |
+| `npm run test:integration` | No | **Yes** | Real Postgres, real PrismaService and real services |
+
+Unit, coverage and e2e suites get their configuration from `test/env.ts`; a local `.env` is never read. The fake-based suites do **not** prove real unique-constraint behaviour, real transaction isolation, real cascades or adapter-specific serialization errors. The integration suite exists to cover those.
+
+### Integration database
+
+Integration tests only read `TEST_DATABASE_URL` and refuse to start unless its database name contains `test`. They never read `DATABASE_URL` from `.env`. Create a separate database in the existing compose Postgres container (this does not touch the `dupdb` container):
+
+```bash
+docker compose exec -T db sh -c 'psql -U "$POSTGRES_USER" -d postgres -c "CREATE DATABASE secureauth_test;"'
+```
+
+Then run the suite, using the host port from your `.env` (`POSTGRES_PORT`, default `5432`):
+
+```bash
+TEST_DATABASE_URL='postgresql://secureauth:secureauth@localhost:5432/secureauth_test?schema=public' npm run test:integration
+```
+
+The suite applies migrations with `prisma migrate deploy` before any test and truncates tables between tests. Because all integration files share one database, they run serially. The concurrent rotation test repeats 20 times and the concurrent last-admin demotion test repeats 10 times to reduce scheduling flakiness; a real Serializable conflict can still surface as a pg `DriverAdapterError`, which the retry logic recognises alongside Prisma `P2034`.
+
+CI uses a throwaway `postgres:16-alpine` service with the database `secureauth_test` and inline credentials; no repository secrets are used.
