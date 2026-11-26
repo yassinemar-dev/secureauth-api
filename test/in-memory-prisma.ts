@@ -1,6 +1,6 @@
 import { createHmac, randomUUID } from 'node:crypto';
 import { vi } from 'vitest';
-import type { RefreshToken } from '../src/generated/prisma/client.js';
+import type { RefreshToken, User } from '../src/generated/prisma/client.js';
 import type { PrismaService } from '../src/prisma/prisma.service.js';
 import { testEnv } from './env.js';
 
@@ -19,6 +19,8 @@ type FakeWhere = {
   expiresAt?: { lt: Date };
 };
 
+type FakeTransactionOptions = { isolationLevel?: string };
+
 function matches(row: RefreshToken, where: FakeWhere): boolean {
   if (where.id !== undefined && row.id !== where.id) return false;
   if (where.userId !== undefined && row.userId !== where.userId) return false;
@@ -35,6 +37,10 @@ function matches(row: RefreshToken, where: FakeWhere): boolean {
 
 export function createInMemoryPrisma() {
   const refreshTokens = new Map<string, RefreshToken>();
+  const users = new Map<string, User>();
+  const transactionOptions: FakeTransactionOptions[] = [];
+  // Transactions are serialized to imitate a database committing one before the next starts.
+  let transactionTail: Promise<unknown> = Promise.resolve();
 
   const seedRefreshToken = (
     input: Pick<RefreshToken, 'userId' | 'familyId' | 'tokenHash' | 'expiresAt'> &
@@ -51,6 +57,11 @@ export function createInMemoryPrisma() {
     };
     refreshTokens.set(row.id, row);
     return row;
+  };
+
+  const seedUser = (input: User): User => {
+    users.set(input.id, input);
+    return input;
   };
 
   const refreshToken = {
@@ -97,12 +108,56 @@ export function createInMemoryPrisma() {
     }),
   };
 
+  const user = {
+    findUnique: vi.fn(
+      async ({ where }: { where: { id?: string; email?: string } }) => {
+        if (where.id) return users.get(where.id) ?? null;
+        if (where.email) {
+          return (
+            [...users.values()].find((row) => row.email === where.email) ?? null
+          );
+        }
+        return null;
+      },
+    ),
+    count: vi.fn(async ({ where }: { where?: { role?: string } } = {}) => {
+      if (!where.role) return users.size;
+      return [...users.values()].filter((row) => row.role === where.role).length;
+    }),
+    update: vi.fn(
+      async ({
+        where,
+        data,
+      }: {
+        where: { id: string };
+        data: Partial<User>;
+      }) => {
+        const row = users.get(where.id);
+        if (!row) throw new Error('Fake user not found');
+        Object.assign(row, data);
+        return row;
+      },
+    ),
+  };
+
   const prisma = {
     refreshToken,
+    user,
     onModuleInit: async () => undefined,
     onModuleDestroy: async () => undefined,
     $transaction: vi.fn(
-      async (fn: (client: unknown) => Promise<unknown>) => fn(prisma),
+      <T>(
+        fn: (client: unknown, options?: FakeTransactionOptions) => Promise<T>,
+        options?: FakeTransactionOptions,
+      ): Promise<T> => {
+        transactionOptions.push(options ?? {});
+        const run = transactionTail.then(() => fn(prisma, options));
+        transactionTail = run.then(
+          () => undefined,
+          () => undefined,
+        );
+        return run;
+      },
     ),
   } as unknown as PrismaService;
 
@@ -110,7 +165,16 @@ export function createInMemoryPrisma() {
     prisma,
     refreshToken,
     refreshTokens,
+    user,
+    users,
     seedRefreshToken,
-    clear: () => refreshTokens.clear(),
+    seedUser,
+    transactionOptions,
+    clear: () => {
+      refreshTokens.clear();
+      users.clear();
+      transactionOptions.length = 0;
+      transactionTail = Promise.resolve();
+    },
   };
 }

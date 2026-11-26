@@ -20,6 +20,11 @@ export interface UserPage {
   nextCursor: string | null;
 }
 
+export type RoleUpdateResult =
+  | { status: 'updated'; user: SafeUser }
+  | { status: 'not-found' }
+  | { status: 'last-admin' };
+
 export function normalizeEmail(email: string): string {
   return email.trim().toLowerCase();
 }
@@ -69,7 +74,7 @@ export class UsersService {
     });
   }
 
-  // Only the future auth module should use this: it returns the password hash.
+  // Only the auth module should use this: it returns the password hash.
   findByEmailWithHash(email: string): Promise<User | null> {
     return this.prisma.user.findUnique({
       where: { email: normalizeEmail(email) },
@@ -110,5 +115,63 @@ export class UsersService {
 
   countByRole(role: Role): Promise<number> {
     return this.prisma.user.count({ where: { role } });
+  }
+
+  private isSerializationFailure(error: unknown): boolean {
+    return (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === 'P2034'
+    );
+  }
+
+  // Count and update share one Serializable transaction so the last-admin
+  // decision is made against a committed snapshot. P2034 is retried; if it
+  // persists, callers get the same 409 as a real last-admin conflict.
+  async updateRoleWithLastAdminGuard(
+    id: string,
+    role: Role,
+  ): Promise<RoleUpdateResult> {
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try {
+        return await this.prisma.$transaction(
+          async (tx) => {
+            const target = await tx.user.findUnique({
+              where: { id },
+              select: { role: true },
+            });
+            if (!target) {
+              return { status: 'not-found' } as const;
+            }
+
+            if (target.role === Role.ADMIN && role !== Role.ADMIN) {
+              const admins = await tx.user.count({
+                where: { role: Role.ADMIN },
+              });
+              if (admins <= 1) {
+                return { status: 'last-admin' } as const;
+              }
+            }
+
+            const user = await tx.user.update({
+              where: { id },
+              data: { role },
+              omit: { passwordHash: true },
+            });
+            return { status: 'updated', user } as const;
+          },
+          { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+        );
+      } catch (error) {
+        if (!this.isSerializationFailure(error)) {
+          throw error;
+        }
+        if (attempt < 3) {
+          continue;
+        }
+        throw new ConflictException('Unable to demote the last admin');
+      }
+    }
+
+    throw new ConflictException('Unable to demote the last admin');
   }
 }

@@ -24,10 +24,9 @@ export class RolesGuard implements CanActivate {
       [context.getHandler(), context.getClass()],
     );
 
-    // Default deny is achieved by decorating protected routes. A route with no
-    // @Roles metadata is not an admin route; JwtAuthGuard handles authentication.
+    // Fail closed: using this guard without @Roles metadata is a wiring mistake.
     if (!requiredRoles) {
-      return true;
+      throw new ForbiddenException('Forbidden');
     }
 
     const request = context

@@ -50,18 +50,15 @@ export class AdminController {
       throw new ForbiddenException('Forbidden');
     }
 
-    const target = await this.users.findById(id);
-    if (!target) {
+    const result = await this.users.updateRoleWithLastAdminGuard(id, dto.role);
+    if (result.status === 'not-found') {
       throw new NotFoundException('User not found');
     }
-
-    const isDemotion = target.role === Role.ADMIN && dto.role !== Role.ADMIN;
-    if (isDemotion && (await this.users.countByRole(Role.ADMIN)) <= 1) {
+    if (result.status === 'last-admin') {
       throw new ConflictException('Unable to demote the last admin');
     }
 
-    const updated = await this.users.updateRole(id, dto.role);
     await this.refreshTokens.revokeAllForUser(id);
-    return updated;
+    return result.user;
   }
 }

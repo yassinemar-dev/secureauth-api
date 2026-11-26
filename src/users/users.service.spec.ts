@@ -4,6 +4,7 @@ import { vi } from 'vitest';
 import { Prisma, Role } from '../generated/prisma/client.js';
 import { PasswordService } from '../password/password.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { createInMemoryPrisma } from '../../test/in-memory-prisma.js';
 import {
   normalizeEmail,
   UsersService,
@@ -178,5 +179,49 @@ describe('UsersService', () => {
 
     await expect(service.countByRole(Role.ADMIN)).resolves.toBe(2);
     expect(userCount).toHaveBeenCalledWith({ where: { role: Role.ADMIN } });
+  });
+
+  it('allows only one of two concurrent last-admin demotions', async () => {
+    const fake = createInMemoryPrisma();
+    const now = new Date('2026-01-01T00:00:00.000Z');
+    const first = fake.seedUser({
+      id: 'admin-1',
+      email: 'first@example.com',
+      passwordHash: 'hash',
+      role: Role.ADMIN,
+      createdAt: now,
+      updatedAt: now,
+    });
+    const second = fake.seedUser({
+      id: 'admin-2',
+      email: 'second@example.com',
+      passwordHash: 'hash',
+      role: Role.ADMIN,
+      createdAt: now,
+      updatedAt: now,
+    });
+    const atomicService = new UsersService(fake.prisma, {} as PasswordService);
+
+    // The fake serializes transactions, so each check sees the previous commit.
+    // A real Serializable DB also detects conflicting reads/writes (P2034),
+    // which this implementation retries. This test does not prove that conflict
+    // behaviour; it proves the count and update share one serialized transaction.
+    const results = await Promise.all([
+      atomicService.updateRoleWithLastAdminGuard(first.id, Role.USER),
+      atomicService.updateRoleWithLastAdminGuard(second.id, Role.USER),
+    ]);
+
+    expect(results.filter((result) => result.status === 'updated')).toHaveLength(
+      1,
+    );
+    expect(
+      results.filter((result) => result.status === 'last-admin'),
+    ).toHaveLength(1);
+    expect(
+      [first, second].filter((admin) => admin.role === Role.USER),
+    ).toHaveLength(1);
+    expect(fake.transactionOptions).toContainEqual({
+      isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+    });
   });
 });

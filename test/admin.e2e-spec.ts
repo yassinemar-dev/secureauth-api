@@ -3,6 +3,7 @@ import { Test } from '@nestjs/testing';
 import { randomUUID } from 'node:crypto';
 import request from 'supertest';
 import { App } from 'supertest/types.js';
+import { configureApp } from '../src/app.setup.js';
 import { AppModule } from '../src/app.module.js';
 import { Role, type User } from '../src/generated/prisma/client.js';
 import { PasswordService } from '../src/password/password.service.js';
@@ -10,10 +11,12 @@ import { PrismaService } from '../src/prisma/prisma.service.js';
 import {
   UsersService,
   type ListUsersInput,
+  type RoleUpdateResult,
   type SafeUser,
   type UserPage,
 } from '../src/users/users.service.js';
 import { createInMemoryPrisma } from './in-memory-prisma.js';
+import { createThrottlerResetter } from './throttler-storage.js';
 
 function toSafeUser(user: User): SafeUser {
   const { id, email, role, createdAt, updatedAt } = user;
@@ -26,6 +29,7 @@ describe('Admin (e2e)', () => {
   let password: PasswordService;
   let fakePrisma: ReturnType<typeof createInMemoryPrisma>;
   let adminCountOverride: number | null;
+  let resetThrottler: () => void;
 
   const validPassword = 'correct horse battery staple';
 
@@ -82,8 +86,28 @@ describe('Admin (e2e)', () => {
         return toSafeUser(user);
       },
       countByRole: async (role: Role): Promise<number> => {
-        if (adminCountOverride !== null) return adminCountOverride;
+        if (adminCountOverride !== null && role === Role.ADMIN) {
+          return adminCountOverride;
+        }
         return [...users.values()].filter((user) => user.role === role).length;
+      },
+      updateRoleWithLastAdminGuard: async (
+        id: string,
+        role: Role,
+      ): Promise<RoleUpdateResult> => {
+        const user = users.get(id);
+        if (!user) return { status: 'not-found' };
+        const isDemotion = user.role === Role.ADMIN && role !== Role.ADMIN;
+        if (isDemotion) {
+          const admins =
+            adminCountOverride ??
+            [...users.values()].filter((item) => item.role === Role.ADMIN)
+              .length;
+          if (admins <= 1) return { status: 'last-admin' };
+        }
+        user.role = role;
+        user.updatedAt = new Date();
+        return { status: 'updated', user: toSafeUser(user) };
       },
       list: async ({ limit = 20, cursor }: ListUsersInput): Promise<UserPage> => {
         const sorted = [...users.values()].sort((a, b) =>
@@ -111,7 +135,9 @@ describe('Admin (e2e)', () => {
       .useValue(fakeUsersService)
       .compile();
 
-    app = moduleFixture.createNestApplication();
+    app = moduleFixture.createNestApplication({ bodyParser: false });
+    configureApp(app);
+    resetThrottler = createThrottlerResetter(app);
     await app.init();
   });
 
@@ -119,6 +145,7 @@ describe('Admin (e2e)', () => {
     users.clear();
     fakePrisma.clear();
     adminCountOverride = null;
+    resetThrottler();
   });
 
   afterAll(async () => {

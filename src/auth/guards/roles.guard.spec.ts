@@ -86,10 +86,15 @@ describe('RolesGuard', () => {
     expect((error as Error).message).toBe('Unauthorized');
   });
 
-  it('allows routes with no @Roles metadata', async () => {
+  it('fails closed when @Roles metadata is missing', async () => {
     reflectorGet.mockReturnValue(undefined);
 
-    await expect(guard.canActivate(makeContext())).resolves.toBe(true);
+    const error = await guard
+      .canActivate(makeContext({ id: dbUser.id, role: Role.ADMIN }))
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(ForbiddenException);
+    expect((error as Error).message).toBe('Forbidden');
     expect(usersFindById).not.toHaveBeenCalled();
   });
 });
